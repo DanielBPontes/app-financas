@@ -2,3 +2,32 @@ streamlit
 pandas
 supabase
 plotly
+
+import google.generativeai as genai
+
+# Configure sua API Key (pegue no Google AI Studio)
+genai.configure(api_key=st.secrets["gemini"]["api_key"])
+
+def analisar_financas_com_ia(df_transacoes):
+    """Envia o resumo dos dados para o Gemini analisar"""
+    
+    # Prepara os dados em texto para a IA entender
+    resumo = df_transacoes.groupby('categoria')['valor'].sum().to_string()
+    total = df_transacoes['valor'].sum()
+    
+    prompt = f"""
+    Atue como um consultor financeiro pessoal agressivo e focado em investimentos.
+    Analise meus gastos deste mês:
+    
+    {resumo}
+    
+    Total Gasto: R$ {total}
+    
+    1. Identifique onde estou desperdiçando dinheiro.
+    2. Me dê uma meta prática para o próximo mês.
+    3. Seja breve e use bullet points.
+    """
+    
+    model = genai.GenerativeModel('gemini-pro')
+    response = model.generate_content(prompt)
+    return response.text
