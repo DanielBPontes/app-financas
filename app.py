@@ -102,7 +102,7 @@ def analisar_financas_com_ia(df_transacoes):
     3. Seja direto e breve (máximo 4 linhas).
     """
     try:
-        model = genai.GenerativeModel('gemini-pro-latest')
+        model = genai.GenerativeModel('gemini-flash-latest')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -329,4 +329,5 @@ elif menu == "Investimentos (Simulador)":
             
             with st.expander("Ver Tabela Detalhada mês a mês"):
                 st.dataframe(df_calc, use_container_width=True)
+
 
