@@ -313,51 +313,52 @@ elif menu == "Lançamentos":
     if 'confirmacao_pendente' not in st.session_state:
         st.session_state['confirmacao_pendente'] = False
     
-    # --- Função para limpar o valor digitado (Aceita 10,50 ou 10.50) ---
+    # --- Função Auxiliar ---
     def limpar_valor(valor_str):
         if not valor_str: return 0.0
-        # Troca vírgula por ponto para o Python entender
         v = valor_str.replace(',', '.')
-        try:
-            return float(v)
-        except:
-            return 0.0
+        try: return float(v)
+        except: return 0.0
 
     # --- Interface Clean ---
     with st.container(border=True):
-        # 1. Valor (Text Input para digitação livre) e Tipo
+        # 1. Valor e Tipo
         c_val, c_tipo = st.columns([1, 1])
         
-        # O text_input permite digitar "10,50" rápido sem brigar com o campo
-        valor_texto = c_val.text_input("Valor (R$)", placeholder="Ex: 10 ou 15,90")
-        valor_final = limpar_valor(valor_texto) # Converte em tempo real
+        # ADICIONADO: key="novo_valor" para podermos limpar depois
+        valor_texto = c_val.text_input("Valor (R$)", placeholder="Ex: 10 ou 15,90", key="novo_valor")
+        valor_final = limpar_valor(valor_texto) 
         
         tipo_input = c_tipo.radio("Tipo", ["Despesa", "Receita"], horizontal=True, label_visibility="collapsed")
 
-        # 2. Data (Hora será automática)
-        # Colocamos apenas Data. A hora pegaremos o 'now' no momento do save.
+        # 2. Data
         data_sel = st.date_input("Data do Gasto", date.today())
 
-        # 3. Categorias Inteligentes
+        # 3. Categorias
         c_cat, c_sub = st.columns(2)
         cat_principal = c_cat.selectbox("Categoria", list(CATEGORIAS.keys()))
         
         categoria_final = cat_principal
+        
+        # Variável para controlar o input de "Outros"
+        nome_outro = ""
+        
         if cat_principal == "Outros":
-            nome_outro = c_sub.text_input("Qual o gasto?", placeholder="Digite o nome...")
+            # ADICIONADO: key="nova_cat_outros"
+            nome_outro = c_sub.text_input("Qual o gasto?", placeholder="Digite o nome...", key="nova_cat_outros")
             if nome_outro: categoria_final = nome_outro
         else:
             sub_cat = c_sub.selectbox("Detalhe", CATEGORIAS[cat_principal])
             categoria_final = sub_cat
 
-        # 4. Descrição (Opcional)
-        descricao_input = st.text_input("Descrição (Opcional)", placeholder="Ex: Almoço com a equipe")
+        # 4. Descrição
+        # ADICIONADO: key="nova_desc"
+        descricao_input = st.text_input("Descrição (Opcional)", placeholder="Ex: Almoço com a equipe", key="nova_desc")
 
         st.markdown("---")
 
         # --- Lógica de Confirmação ---
         if not st.session_state['confirmacao_pendente']:
-            # Botão grande para verificar
             if st.button("Verificar e Salvar", type="primary", use_container_width=True):
                 if valor_final > 0:
                     st.session_state['confirmacao_pendente'] = True
@@ -365,13 +366,11 @@ elif menu == "Lançamentos":
                 else:
                     st.warning("⚠️ Digite um valor válido (ex: 10,50)")
         else:
-            # Captura hora exata AGORA
             hora_atual = datetime.now().time()
             data_completa = datetime.combine(data_sel, hora_atual)
             
-            # Mostra Resumo Bonito
             st.info(f"💾 **Confirmar:** R$ {valor_final:.2f} em **{categoria_final}**?")
-            st.caption(f"Data/Hora do registro: {data_completa.strftime('%d/%m/%Y às %H:%M')}")
+            st.caption(f"Data: {data_completa.strftime('%d/%m/%Y às %H:%M')}")
             
             col_conf1, col_conf2 = st.columns(2)
             with col_conf1:
@@ -386,12 +385,19 @@ elif menu == "Lançamentos":
                             desc_final, 
                             valor_final, 
                             tipo_input, 
-                            False # Recorrente check removido da UI rápida, adicione se quiser
+                            False 
                         )
-                        st.toast(f"R$ {valor_final} salvo!", icon="🚀")
-                        st.session_state['confirmacao_pendente'] = False
+                        st.toast(f"R$ {valor_final} salvo com sucesso!", icon="🚀")
+                        
+                        # --- O PULO DO GATO: LIMPEZA DOS CAMPOS ---
+                        st.session_state['novo_valor'] = ""       # Limpa valor
+                        st.session_state['nova_desc'] = ""        # Limpa descrição
+                        st.session_state['nova_cat_outros'] = ""  # Limpa campo outros
+                        st.session_state['confirmacao_pendente'] = False # Reseta botão
+                        
                         time.sleep(0.5)
                         st.rerun()
+                        
                     except Exception as e:
                         st.error(f"Erro: {e}")
             
@@ -424,5 +430,6 @@ elif menu == "Simulador Juros":
             df_calc, final = calcular_investimento_bcb(meses, taxa, aporte)
             st.metric("Resultado Final", f"R$ {final:,.2f}")
             st.plotly_chart(px.area(df_calc, x="Mês", y="Saldo Total"), use_container_width=True)
+
 
 
