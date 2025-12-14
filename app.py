@@ -10,12 +10,28 @@ import google.generativeai as genai
 # --- Configuração da Página ---
 st.set_page_config(page_title="Finanças Chat", page_icon="💬", layout="wide")
 
-# --- CSS Moderno ---
+# --- CSS (Estilo Moderno & Clean) ---
 st.markdown("""
 <style>
+    /* Esconde cabeçalho padrão */
     .stAppHeader {display:none;}
-    .stChatMessage { padding: 1rem; border-radius: 10px; margin-bottom: 10px; }
-    [data-testid="stMetricValue"] { font-size: 24px; font-weight: bold; color: #00CC96; }
+    
+    /* Ajustes Gerais */
+    .stChatMessage { padding: 1rem; border-radius: 12px; margin-bottom: 10px; }
+    
+    /* Métricas do Dashboard */
+    [data-testid="stMetricValue"] { font-size: 26px; font-weight: 800; color: #00CC96; }
+    
+    /* Estilo dos Cards de Transação */
+    .trans-card {
+        padding: 10px;
+        border-radius: 10px;
+        margin-bottom: 8px;
+        background-color: #262730; /* Ajuste conforme tema dark/light */
+    }
+    .icon-box { font-size: 24px; text-align: center; }
+    .val-despesa { color: #FF4B4B; font-weight: bold; text-align: right; }
+    .val-receita { color: #00CC96; font-weight: bold; text-align: right; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -54,28 +70,23 @@ def carregar_transacoes(user_id):
         return df
     except: return pd.DataFrame()
 
-# --- NOVA FUNÇÃO: UPLOAD DE IMAGEM ---
 def upload_comprovante(arquivo, user_id):
-    """Envia arquivo para o Bucket 'comprovantes' do Supabase"""
+    """Envia arquivo para o Bucket 'comprovantes'"""
     try:
-        # Cria um nome único para o arquivo: ID_do_Usuario + Timestamp + NomeOriginal
         nome_arquivo = f"{user_id}_{int(time.time())}_{arquivo.name}"
-        
-        # Lê os bytes do arquivo
         arquivo_bytes = arquivo.getvalue()
-        
-        # Faz o upload
         bucket_name = "comprovantes"
         supabase.storage.from_(bucket_name).upload(nome_arquivo, arquivo_bytes, {"content-type": arquivo.type})
-        
-        # Pega a URL pública para salvar no banco
-        url_publica = supabase.storage.from_(bucket_name).get_public_url(nome_arquivo)
-        return url_publica
+        return supabase.storage.from_(bucket_name).get_public_url(nome_arquivo)
     except Exception as e:
-        st.error(f"Erro no upload: {e}")
+        st.error(f"Erro upload: {e}")
         return None
 
-def salvar_transacao(user_id, data_iso, categoria, descricao, valor, tipo, url_comprovante=None):
+def salvar_transacao(user_id, data_iso, categoria, descricao, valor, tipo, comprovante_url=None):
+    # Tenta inferir tipo se não vier da IA (IA as vezes falha no tipo explícito)
+    if tipo is None:
+        tipo = "Despesa" # Default
+        
     data = {
         "user_id": user_id,
         "data": data_iso,
@@ -83,50 +94,55 @@ def salvar_transacao(user_id, data_iso, categoria, descricao, valor, tipo, url_c
         "descricao": descricao,
         "valor": float(valor),
         "recorrente": False,
-        "comprovante_url": url_comprovante # Nova coluna
+        "comprovante_url": comprovante_url,
+        "tipo": tipo # Certifique-se de ter criado essa coluna no Supabase, ou remova se não usar
     }
     supabase.table("transactions").insert(data).execute()
 
-# --- CÉREBRO DO CHAT (IA) ---
+# --- UI Helpers (Ícones e Formatação) ---
+def get_categoria_icon(categoria):
+    mapa = {
+        "Alimentação": "🍔", "Transporte": "🚗", "Lazer": "🎮", 
+        "Saúde": "💊", "Investimentos": "📈", "Casa": "🏠", 
+        "Outros": "📦", "Educação": "📚", "Trabalho": "💼"
+    }
+    return mapa.get(categoria, "💸")
+
+# --- IA Logic ---
 def interpretar_comando_chat(texto_usuario):
-    if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA não configurada."}
+    if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA Off"}
     data_hoje = date.today().strftime("%Y-%m-%d")
     
     prompt = f"""
-    Você é um assistente financeiro (hoje: {data_hoje}).
-    Texto: "{texto_usuario}"
+    Hoje: {data_hoje}.
+    Usuário: "{texto_usuario}"
     
-    Categorias: Alimentação, Transporte, Lazer, Saúde, Investimentos, Casa, Outros.
+    1. Identifique: Valor, Categoria (Alimentação, Transporte, Lazer, Saúde, Casa, Investimentos, Outros), Descrição, Data.
+    2. Identifique TIPO: 'Despesa' ou 'Receita'.
+    3. JSON Obrigatório. Se faltar valor, acao='pergunta'. Se ok, acao='confirmar'.
     
-    1. Identifique Despesa/Receita, Valor, Categoria e Descrição.
-    2. Se faltar VALOR, retorne "acao": "pergunta".
-    3. Se tiver tudo, "acao": "salvar".
-    
-    Responda APENAS JSON.
-    Exemplo Sucesso: {{"acao": "salvar", "dados": {{"data": "2024-12-14", "valor": 10.50, "categoria": "Lazer", "descricao": "Cinema", "tipo": "Despesa"}}, "resposta_ia": "Salvo!"}}
-    Exemplo Falta: {{"acao": "pergunta", "msg": "Qual o valor?"}}
+    Exemplo: {{"acao": "confirmar", "dados": {{"data": "2024-12-14", "valor": 50.00, "categoria": "Alimentação", "descricao": "Pizza", "tipo": "Despesa"}}, "msg_ia": "Entendi: Pizza (R$ 50)"}}
     """
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
-        texto_limpo = response.text.replace('```json', '').replace('```', '').strip()
-        return json.loads(texto_limpo)
-    except Exception as e:
-        return {"acao": "erro", "msg": f"Erro: {e}"}
+        clean_text = response.text.replace('```json', '').replace('```', '').strip()
+        return json.loads(clean_text)
+    except: return {"acao": "erro", "msg": "Erro na IA"}
 
 # --- Lógica de Análise ---
 def gerar_analise_mensal_condicional(df_mes):
     if df_mes.empty: return "Sem dados."
-    total_gasto = df_mes['valor'].sum()
-    dias_unicos = df_mes['data_dt'].dt.date.nunique()
+    total = df_mes['valor'].sum()
+    dias = df_mes['data_dt'].dt.date.nunique()
     
-    if total_gasto < 1000 and dias_unicos < 5: # Reduzi a trava para teste
-        return f"📉 **Dados insuficientes.**\nPreciso de mais de R$ 1000 gastos ou 5 dias diferentes de registros.\nAtual: R$ {total_gasto:.2f} em {dias_unicos} dias."
+    if total < 500 and dias < 3: # Regra relaxada para testes
+        return f"📉 **Dados insuficientes.**\nContinue usando o app para liberar a consultoria.\nAtual: R$ {total:.2f} em {dias} dias."
     
     resumo = df_mes.groupby('categoria')['valor'].sum().to_string()
-    prompt = f"Analise estes gastos (Total R$ {total_gasto}):\n{resumo}\nSeja um consultor financeiro criativo."
+    prompt = f"Analise estes gastos (Total R$ {total}):\n{resumo}\nSeja um consultor financeiro breve e direto."
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         return model.generate_content(prompt).text
     except Exception as e: return f"Erro IA: {e}"
 
@@ -142,12 +158,12 @@ if not st.session_state['user']:
         with st.form("login"):
             u = st.text_input("Usuário")
             p = st.text_input("Senha", type="password")
-            if st.form_submit_button("Acessar", use_container_width=True):
+            if st.form_submit_button("Entrar", use_container_width=True):
                 user = login_user(u, p)
                 if user:
                     st.session_state['user'] = user
                     st.rerun()
-                else: st.error("Erro.")
+                else: st.error("Erro no login.")
     st.stop()
 
 # =======================================================
@@ -157,7 +173,7 @@ user = st.session_state['user']
 
 with st.sidebar:
     st.markdown(f"👤 **{user['username']}**")
-    menu = st.radio("Menu", ["💬 Chat & Anexo", "📊 Dashboard", "🧠 Relatórios"], index=0)
+    menu = st.radio("Menu", ["💬 Chat Financeiro", "📊 Dashboard", "🧠 Relatórios"], index=0)
     st.divider()
     meses_map = {1:"Jan", 2:"Fev", 3:"Mar", 4:"Abr", 5:"Mai", 6:"Jun", 7:"Jul", 8:"Ago", 9:"Set", 10:"Out", 11:"Nov", 12:"Dez"}
     c_m, c_a = st.columns(2)
@@ -173,93 +189,157 @@ if not df.empty:
 else:
     df_mes = pd.DataFrame()
 
-# --- 1. CHAT COM ANEXO ---
-if menu == "💬 Chat & Anexo":
+# --- 1. CHAT COM FLUXO DE ANEXO ---
+if menu == "💬 Chat Financeiro":
     st.title("Assistente Financeiro")
 
     if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "O que vamos registrar? Se tiver recibo, anexe abaixo!"}]
+        st.session_state.messages = [{"role": "assistant", "content": "Olá! Quanto você gastou ou recebeu hoje?"}]
+    
+    # Estado para transação pendente de confirmação/anexo
+    if "pending_transaction" not in st.session_state:
+        st.session_state.pending_transaction = None
 
+    # Exibe Histórico
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # --- ÁREA DE ANEXO (Expander para não poluir) ---
-    with st.expander("📎 Anexar Comprovante/Recibo (Opcional)", expanded=False):
-        arquivo_upload = st.file_uploader("Escolha uma imagem ou PDF", type=['png', 'jpg', 'jpeg', 'pdf'], key="uploader_chat")
-
-    if prompt := st.chat_input("Ex: Gastei 150 na farmácia"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"): st.markdown(prompt)
-
+    # Se NÃO tiver pendência, mostra o input normal
+    if not st.session_state.pending_transaction:
+        if prompt := st.chat_input("Ex: Almoço 45 reais"):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            st.rerun()
+    
+    # Processamento Lógico (Separado da renderização para evitar loops)
+    if st.session_state.messages[-1]["role"] == "user" and not st.session_state.pending_transaction:
         with st.chat_message("assistant"):
-            with st.spinner("Processando..."):
-                resultado = interpretar_comando_chat(prompt)
-                resposta_final = ""
+            with st.spinner("Analisando..."):
+                last_msg = st.session_state.messages[-1]["content"]
+                resultado = interpretar_comando_chat(last_msg)
                 
-                if resultado['acao'] == 'salvar':
-                    d = resultado['dados']
-                    try:
-                        # 1. Verifica se tem arquivo para subir
-                        url_arquivo = None
-                        if arquivo_upload is not None:
-                            with st.spinner("Subindo comprovante..."):
-                                url_arquivo = upload_comprovante(arquivo_upload, user['id'])
-                        
-                        # 2. Salva Transação com a URL
-                        salvar_transacao(user['id'], d['data'], d['categoria'], d['descricao'], d['valor'], d['tipo'], url_arquivo)
-                        
-                        msg_extra = " (Com anexo 📎)" if url_arquivo else ""
-                        resposta_final = f"✅ {resultado['resposta_ia']}{msg_extra}"
-                        st.toast(f"Salvo: R$ {d['valor']}", icon="💾")
-                        time.sleep(1)
-                        
-                    except Exception as e:
-                        resposta_final = f"Erro ao salvar: {e}"
-                        
+                if resultado['acao'] == 'confirmar':
+                    # SALVA NO ESTADO E PEDE CONFIRMAÇÃO/ANEXO
+                    st.session_state.pending_transaction = resultado['dados']
+                    st.rerun() # Recarrega para mostrar a interface de anexo
+                
                 elif resultado['acao'] == 'pergunta':
-                    resposta_final = f"🤔 {resultado['msg']}"
+                    msg = f"🤔 {resultado['msg']}"
+                    st.markdown(msg)
+                    st.session_state.messages.append({"role": "assistant", "content": msg})
                 else:
-                    resposta_final = f"⚠️ {resultado.get('msg', 'Erro')}"
+                    msg = "⚠️ Não entendi. Tente 'Gastei X em Y'."
+                    st.markdown(msg)
+                    st.session_state.messages.append({"role": "assistant", "content": msg})
 
-                st.markdown(resposta_final)
-                st.session_state.messages.append({"role": "assistant", "content": resposta_final})
-                # Força rerun para limpar o uploader se foi usado
-                if resultado['acao'] == 'salvar':
-                    time.sleep(0.5)
+    # --- INTERFACE DE CONFIRMAÇÃO E ANEXO ---
+    if st.session_state.pending_transaction:
+        d = st.session_state.pending_transaction
+        
+        with st.chat_message("assistant"):
+            st.info(f"🧾 **Confirmação:** R$ {d['valor']} em {d['categoria']} ({d['descricao']})")
+            st.markdown("**Deseja anexar um comprovante antes de salvar?**")
+            
+            # Container do Formulário de Confirmação
+            with st.container(border=True):
+                arquivo = st.file_uploader("📸 Foto do Recibo (Opcional)", type=['jpg', 'png', 'pdf'])
+                
+                c1, c2 = st.columns(2)
+                
+                # Botão SALVAR
+                if c1.button("✅ Salvar Lançamento", type="primary", use_container_width=True):
+                    url_final = None
+                    if arquivo:
+                        with st.spinner("Subindo anexo..."):
+                            url_final = upload_comprovante(arquivo, user['id'])
+                    
+                    try:
+                        salvar_transacao(user['id'], d['data'], d['categoria'], d['descricao'], d['valor'], d.get('tipo', 'Despesa'), url_final)
+                        
+                        msg_sucesso = f"✅ Salvo com sucesso! R$ {d['valor']}" + (" (Com anexo)" if url_final else "")
+                        st.session_state.messages.append({"role": "assistant", "content": msg_sucesso})
+                        st.session_state.pending_transaction = None # Limpa pendência
+                        st.toast("Transação registrada!", icon="🚀")
+                        time.sleep(0.5)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro: {e}")
+
+                # Botão CANCELAR
+                if c2.button("❌ Cancelar", use_container_width=True):
+                    st.session_state.pending_transaction = None
+                    st.session_state.messages.append({"role": "assistant", "content": "🚫 Operação cancelada."})
                     st.rerun()
 
-# --- 2. DASHBOARD ---
+# --- 2. DASHBOARD (UI/UX Melhorada) ---
 elif menu == "📊 Dashboard":
-    st.title(f"Visão de {mes_sel}/{ano_sel}")
+    st.title(f"Visão de {meses_map[mes_sel]}/{ano_sel}")
+    
     if not df_mes.empty:
+        # Métricas Topo
         total = df_mes['valor'].sum()
-        st.metric("Total Gasto", f"R$ {total:,.2f}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Saldo do Mês", f"R$ {total:,.2f}")
+        c2.metric("Lançamentos", len(df_mes))
+        c3.metric("Média Diária", f"R$ {total/30:,.2f}")
         
-        st.subheader("Últimos Registros")
+        st.markdown("---")
         
-        # Cria colunas para a tabela ficar bonita
-        for index, row in df_mes.head(10).iterrows():
-            with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([2, 3, 2, 1])
-                c1.write(f"📅 {row['data_dt'].strftime('%d/%m')}")
-                c2.write(f"**{row['descricao']}**")
-                c3.write(f"R$ {row['valor']:.2f}")
+        # Área Principal: Extrato em Cards
+        c_extrato, c_grafico = st.columns([1, 1])
+        
+        with c_extrato:
+            st.subheader("📝 Últimas Movimentações")
+            
+            # Ordena por data mais recente
+            df_show = df_mes.sort_values(by="data_dt", ascending=False).head(10)
+            
+            for index, row in df_show.iterrows():
+                # Lógica Visual do Card
+                icone = get_categoria_icon(row['categoria'])
+                is_receita = row.get('tipo') == 'Receita' # Ajuste se não tiver essa coluna ainda
+                cor_valor = "#00CC96" if is_receita else "#FF4B4B"
+                sinal = "+" if is_receita else "-"
                 
-                # Botão para ver comprovante se existir
-                if row.get('comprovante_url') and str(row['comprovante_url']) != "None":
-                    with c4:
-                        st.link_button("📎 Ver", row['comprovante_url'])
-                else:
-                    with c4:
-                        st.write("-")
+                # Container Card
+                with st.container(border=True):
+                    col_ico, col_desc, col_val, col_act = st.columns([1, 5, 3, 1])
+                    
+                    with col_ico:
+                        st.markdown(f"<div class='icon-box'>{icone}</div>", unsafe_allow_html=True)
+                    
+                    with col_desc:
+                        st.markdown(f"**{row['descricao']}**")
+                        st.caption(f"{row['data_dt'].strftime('%d/%m')} • {row['categoria']}")
+                    
+                    with col_val:
+                        st.markdown(f"<div style='text-align:right; color:{cor_valor}; font-weight:bold;'>{sinal} R$ {row['valor']:.2f}</div>", unsafe_allow_html=True)
+                    
+                    with col_act:
+                        if row.get('comprovante_url') and str(row['comprovante_url']) != "None":
+                            st.link_button("📎", row['comprovante_url'], help="Ver anexo")
+        
+        with c_grafico:
+            st.subheader("🍩 Distribuição")
+            gastos = df_mes.groupby("categoria")['valor'].sum().reset_index()
+            fig = px.pie(gastos, values='valor', names='categoria', hole=0.6, color_discrete_sequence=px.colors.qualitative.Set3)
+            fig.update_layout(showlegend=True, margin=dict(t=20, b=20, l=20, r=20))
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.subheader("📅 Gasto Diário")
+            diario = df_mes.groupby("data")['valor'].sum().reset_index()
+            fig2 = px.bar(diario, x="data", y="valor", color="valor", color_continuous_scale="Reds")
+            fig2.update_layout(xaxis_title=None, yaxis_title=None, showlegend=False)
+            st.plotly_chart(fig2, use_container_width=True)
+
     else:
-        st.info("Sem dados.")
+        st.info("Nenhum dado neste mês. Vá ao Chat e diga 'Gastei...'")
 
 # --- 3. RELATÓRIOS ---
 elif menu == "🧠 Relatórios":
-    st.title("Consultoria")
-    if st.button("Gerar Análise"):
+    st.title("Consultoria IA")
+    if st.button("Gerar Análise do Mês", type="primary"):
         with st.spinner("Analisando..."):
             analise = gerar_analise_mensal_condicional(df_mes)
+            st.markdown("---")
             st.markdown(analise)
