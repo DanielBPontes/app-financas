@@ -8,30 +8,45 @@ import json
 import google.generativeai as genai
 
 # --- Configuração da Página ---
-st.set_page_config(page_title="Finanças Chat", page_icon="💬", layout="wide")
+st.set_page_config(page_title="Finanças Chat Pro", page_icon="💳", layout="wide")
 
-# --- CSS (Estilo Moderno & Clean) ---
+# --- CSS PRO (Estilo Mobile/App) ---
 st.markdown("""
 <style>
-    /* Esconde cabeçalho padrão */
+    /* Remover cabeçalho padrão */
     .stAppHeader {display:none;}
     
-    /* Ajustes Gerais */
-    .stChatMessage { padding: 1rem; border-radius: 12px; margin-bottom: 10px; }
+    /* Área do Chat */
+    .stChatMessage { padding: 1rem; border-radius: 12px; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
     
-    /* Métricas do Dashboard */
-    [data-testid="stMetricValue"] { font-size: 26px; font-weight: 800; color: #00CC96; }
-    
-    /* Estilo dos Cards de Transação */
-    .trans-card {
-        padding: 10px;
-        border-radius: 10px;
-        margin-bottom: 8px;
-        background-color: #262730; /* Ajuste conforme tema dark/light */
+    /* Card de Transação (Estilo Nubank/App) */
+    .transaction-card {
+        background-color: #262730;
+        padding: 15px;
+        border-radius: 12px;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-left: 5px solid #4B4B4B;
+        transition: transform 0.2s;
     }
-    .icon-box { font-size: 24px; text-align: center; }
-    .val-despesa { color: #FF4B4B; font-weight: bold; text-align: right; }
-    .val-receita { color: #00CC96; font-weight: bold; text-align: right; }
+    .transaction-card:hover { transform: scale(1.01); }
+    
+    .t-icon { font-size: 24px; margin-right: 15px; width: 40px; text-align: center; }
+    .t-info { flex-grow: 1; }
+    .t-desc { font-weight: 600; font-size: 16px; display: block; }
+    .t-date { font-size: 12px; color: #A0A0A0; }
+    .t-value { font-weight: bold; font-size: 16px; }
+    
+    /* Cores por tipo */
+    .despesa { border-left-color: #FF4B4B !important; }
+    .receita { border-left-color: #00CC96 !important; }
+    .val-despesa { color: #FF4B4B; }
+    .val-receita { color: #00CC96; }
+
+    /* Botões de Ação */
+    .stButton button { width: 100%; border-radius: 8px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -53,6 +68,13 @@ try:
     else: IA_AVAILABLE = False
 except: IA_AVAILABLE = False
 
+# --- Mapeamento de Ícones ---
+ICONS = {
+    "Alimentação": "🍔", "Transporte": "🚗", "Lazer": "🎉", 
+    "Saúde": "💊", "Investimentos": "📈", "Casa": "🏠", 
+    "Outros": "📦", "Receita": "💰"
+}
+
 # --- Backend Functions ---
 def login_user(username, password):
     try:
@@ -70,81 +92,71 @@ def carregar_transacoes(user_id):
         return df
     except: return pd.DataFrame()
 
-def upload_comprovante(arquivo, user_id):
-    """Envia arquivo para o Bucket 'comprovantes'"""
+def upload_imagem(arquivo, user_id):
+    """Faz upload para o bucket 'comprovantes' no Supabase"""
     try:
-        nome_arquivo = f"{user_id}_{int(time.time())}_{arquivo.name}"
+        nome_arquivo = f"{user_id}/{int(time.time())}_{arquivo.name}"
         arquivo_bytes = arquivo.getvalue()
-        bucket_name = "comprovantes"
-        supabase.storage.from_(bucket_name).upload(nome_arquivo, arquivo_bytes, {"content-type": arquivo.type})
-        return supabase.storage.from_(bucket_name).get_public_url(nome_arquivo)
+        supabase.storage.from_("comprovantes").upload(nome_arquivo, arquivo_bytes, {"content-type": arquivo.type})
+        # Retorna a URL pública
+        url = supabase.storage.from_("comprovantes").get_public_url(nome_arquivo)
+        return url
     except Exception as e:
         st.error(f"Erro upload: {e}")
         return None
 
-def salvar_transacao(user_id, data_iso, categoria, descricao, valor, tipo, comprovante_url=None):
-    # Tenta inferir tipo se não vier da IA (IA as vezes falha no tipo explícito)
-    if tipo is None:
-        tipo = "Despesa" # Default
-        
+def salvar_transacao(user_id, dados, url_anexo=None):
     data = {
         "user_id": user_id,
-        "data": data_iso,
-        "categoria": categoria,
-        "descricao": descricao,
-        "valor": float(valor),
-        "recorrente": False,
-        "comprovante_url": comprovante_url,
-        "tipo": tipo # Certifique-se de ter criado essa coluna no Supabase, ou remova se não usar
+        "data": dados['data'],
+        "categoria": dados['categoria'],
+        "descricao": dados['descricao'],
+        "valor": float(dados['valor']),
+        "tipo": dados.get('tipo', 'Despesa'),
+        "comprovante_url": url_anexo # Precisa criar essa coluna no Supabase se não existir
     }
     supabase.table("transactions").insert(data).execute()
 
-# --- UI Helpers (Ícones e Formatação) ---
-def get_categoria_icon(categoria):
-    mapa = {
-        "Alimentação": "🍔", "Transporte": "🚗", "Lazer": "🎮", 
-        "Saúde": "💊", "Investimentos": "📈", "Casa": "🏠", 
-        "Outros": "📦", "Educação": "📚", "Trabalho": "💼"
-    }
-    return mapa.get(categoria, "💸")
-
-# --- IA Logic ---
+# --- CÉREBRO DO CHAT (IA) ---
 def interpretar_comando_chat(texto_usuario):
-    if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA Off"}
+    if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA Off."}
     data_hoje = date.today().strftime("%Y-%m-%d")
     
     prompt = f"""
-    Hoje: {data_hoje}.
-    Usuário: "{texto_usuario}"
+    Hoje: {data_hoje}. User: "{texto_usuario}"
+    Categorias: Alimentação, Transporte, Lazer, Saúde, Investimentos, Casa, Outros.
     
-    1. Identifique: Valor, Categoria (Alimentação, Transporte, Lazer, Saúde, Casa, Investimentos, Outros), Descrição, Data.
-    2. Identifique TIPO: 'Despesa' ou 'Receita'.
-    3. JSON Obrigatório. Se faltar valor, acao='pergunta'. Se ok, acao='confirmar'.
-    
-    Exemplo: {{"acao": "confirmar", "dados": {{"data": "2024-12-14", "valor": 50.00, "categoria": "Alimentação", "descricao": "Pizza", "tipo": "Despesa"}}, "msg_ia": "Entendi: Pizza (R$ 50)"}}
+    Se faltar valor: {{"acao": "pergunta", "msg": "qual valor?"}}
+    Se ok: {{"acao": "confirmar_dados", "dados": {{ "data": "YYYY-MM-DD", "valor": 0.00, "categoria": "X", "descricao": "Y", "tipo": "Despesa/Receita" }} }}
+    Responda JSON puro.
     """
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
-        clean_text = response.text.replace('```json', '').replace('```', '').strip()
-        return json.loads(clean_text)
-    except: return {"acao": "erro", "msg": "Erro na IA"}
-
-# --- Lógica de Análise ---
-def gerar_analise_mensal_condicional(df_mes):
-    if df_mes.empty: return "Sem dados."
-    total = df_mes['valor'].sum()
-    dias = df_mes['data_dt'].dt.date.nunique()
-    
-    if total < 500 and dias < 3: # Regra relaxada para testes
-        return f"📉 **Dados insuficientes.**\nContinue usando o app para liberar a consultoria.\nAtual: R$ {total:.2f} em {dias} dias."
-    
-    resumo = df_mes.groupby('categoria')['valor'].sum().to_string()
-    prompt = f"Analise estes gastos (Total R$ {total}):\n{resumo}\nSeja um consultor financeiro breve e direto."
-    try:
         model = genai.GenerativeModel('gemini-flash-latest')
-        return model.generate_content(prompt).text
-    except Exception as e: return f"Erro IA: {e}"
+        resp = model.generate_content(prompt)
+        return json.loads(resp.text.replace('```json','').replace('```','').strip())
+    except Exception as e: return {"acao": "erro", "msg": str(e)}
+
+# --- Componente Visual de Card ---
+def render_card(row):
+    tipo_class = "receita" if row['tipo'] == "Receita" else "despesa"
+    val_class = "val-receita" if row['tipo'] == "Receita" else "val-despesa"
+    icon = ICONS.get(row['categoria'], "💸")
+    data_fmt = row['data_dt'].strftime("%d/%m")
+    
+    html = f"""
+    <div class="transaction-card {tipo_class}">
+        <div class="t-icon">{icon}</div>
+        <div class="t-info">
+            <span class="t-desc">{row['descricao']}</span>
+            <span class="t-date">{data_fmt} • {row['categoria']}</span>
+        </div>
+        <div class="t-value {val_class}">R$ {row['valor']:.2f}</div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+    if pd.notna(row.get('comprovante_url')) and row['comprovante_url']:
+        with st.expander("Ver Comprovante"):
+            st.image(row['comprovante_url'], width=200)
 
 # =======================================================
 # LOGIN
@@ -154,7 +166,7 @@ if 'user' not in st.session_state: st.session_state['user'] = None
 if not st.session_state['user']:
     c1, c2, c3 = st.columns([1,1,1])
     with c2:
-        st.title("💬 Finanças Chat")
+        st.title("🔒 Login")
         with st.form("login"):
             u = st.text_input("Usuário")
             p = st.text_input("Senha", type="password")
@@ -163,7 +175,7 @@ if not st.session_state['user']:
                 if user:
                     st.session_state['user'] = user
                     st.rerun()
-                else: st.error("Erro no login.")
+                else: st.error("Acesso negado.")
     st.stop()
 
 # =======================================================
@@ -171,175 +183,140 @@ if not st.session_state['user']:
 # =======================================================
 user = st.session_state['user']
 
+# Sidebar
 with st.sidebar:
-    st.markdown(f"👤 **{user['username']}**")
-    menu = st.radio("Menu", ["💬 Chat Financeiro", "📊 Dashboard", "🧠 Relatórios"], index=0)
+    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=50)
+    st.markdown(f"Olá, **{user['username']}**")
+    menu = st.radio("Menu", ["Chat & Lançamento", "Extrato Visual", "Análises"], label_visibility="collapsed")
+    
     st.divider()
-    meses_map = {1:"Jan", 2:"Fev", 3:"Mar", 4:"Abr", 5:"Mai", 6:"Jun", 7:"Jul", 8:"Ago", 9:"Set", 10:"Out", 11:"Nov", 12:"Dez"}
-    c_m, c_a = st.columns(2)
-    mes_sel = c_m.selectbox("Mês", list(meses_map.keys()), index=date.today().month - 1)
-    ano_sel = c_a.number_input("Ano", 2024, 2030, date.today().year)
-    if st.button("Sair"):
-        st.session_state['user'] = None
+    if st.button("Sair", icon="🚪"):
+        st.session_state.clear()
         st.rerun()
 
-df = carregar_transacoes(user['id'])
-if not df.empty:
-    df_mes = df[(df['data_dt'].dt.month == mes_sel) & (df['data_dt'].dt.year == ano_sel)]
-else:
-    df_mes = pd.DataFrame()
+# --- ESTADOS DO CHAT ---
+if "chat_history" not in st.session_state: st.session_state.chat_history = []
+if "temp_transaction" not in st.session_state: st.session_state.temp_transaction = None
+if "flow_step" not in st.session_state: st.session_state.flow_step = "listening" # listening, confirming, uploading
 
-# --- 1. CHAT COM FLUXO DE ANEXO ---
-if menu == "💬 Chat Financeiro":
-    st.title("Assistente Financeiro")
-
-    if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Olá! Quanto você gastou ou recebeu hoje?"}]
+# 1. CHAT INTELIGENTE COM FLUXO DE ANEXO
+if menu == "Chat & Lançamento":
+    st.title("💬 Lançamento Inteligente")
     
-    # Estado para transação pendente de confirmação/anexo
-    if "pending_transaction" not in st.session_state:
-        st.session_state.pending_transaction = None
+    # Renderiza Histórico
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-    # Exibe Histórico
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    # --- FLUXO 1: Escutando (Input Normal) ---
+    if st.session_state.flow_step == "listening":
+        if prompt := st.chat_input("Ex: Almoço 45 reais..."):
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            st.rerun() # Rerun para mostrar msg do user logo
 
-    # Se NÃO tiver pendência, mostra o input normal
-    if not st.session_state.pending_transaction:
-        if prompt := st.chat_input("Ex: Almoço 45 reais"):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            st.rerun()
-    
-    # Processamento Lógico (Separado da renderização para evitar loops)
-    if st.session_state.messages[-1]["role"] == "user" and not st.session_state.pending_transaction:
-        with st.chat_message("assistant"):
-            with st.spinner("Analisando..."):
-                last_msg = st.session_state.messages[-1]["content"]
-                resultado = interpretar_comando_chat(last_msg)
-                
-                if resultado['acao'] == 'confirmar':
-                    # SALVA NO ESTADO E PEDE CONFIRMAÇÃO/ANEXO
-                    st.session_state.pending_transaction = resultado['dados']
-                    st.rerun() # Recarrega para mostrar a interface de anexo
-                
-                elif resultado['acao'] == 'pergunta':
-                    msg = f"🤔 {resultado['msg']}"
-                    st.markdown(msg)
-                    st.session_state.messages.append({"role": "assistant", "content": msg})
-                else:
-                    msg = "⚠️ Não entendi. Tente 'Gastei X em Y'."
-                    st.markdown(msg)
-                    st.session_state.messages.append({"role": "assistant", "content": msg})
-
-    # --- INTERFACE DE CONFIRMAÇÃO E ANEXO ---
-    if st.session_state.pending_transaction:
-        d = st.session_state.pending_transaction
-        
-        with st.chat_message("assistant"):
-            st.info(f"🧾 **Confirmação:** R$ {d['valor']} em {d['categoria']} ({d['descricao']})")
-            st.markdown("**Deseja anexar um comprovante antes de salvar?**")
+        # Processamento após rerun
+        if st.session_state.chat_history and st.session_state.chat_history[-1]["role"] == "user":
+            last_msg = st.session_state.chat_history[-1]["content"]
             
-            # Container do Formulário de Confirmação
-            with st.container(border=True):
-                arquivo = st.file_uploader("📸 Foto do Recibo (Opcional)", type=['jpg', 'png', 'pdf'])
-                
-                c1, c2 = st.columns(2)
-                
-                # Botão SALVAR
-                if c1.button("✅ Salvar Lançamento", type="primary", use_container_width=True):
-                    url_final = None
-                    if arquivo:
-                        with st.spinner("Subindo anexo..."):
-                            url_final = upload_comprovante(arquivo, user['id'])
+            # Só processa se ainda não tiver uma transação pendente engatilhada
+            if st.session_state.temp_transaction is None:
+                with st.spinner("Interpretando..."):
+                    res = interpretar_comando_chat(last_msg)
                     
-                    try:
-                        salvar_transacao(user['id'], d['data'], d['categoria'], d['descricao'], d['valor'], d.get('tipo', 'Despesa'), url_final)
-                        
-                        msg_sucesso = f"✅ Salvo com sucesso! R$ {d['valor']}" + (" (Com anexo)" if url_final else "")
-                        st.session_state.messages.append({"role": "assistant", "content": msg_sucesso})
-                        st.session_state.pending_transaction = None # Limpa pendência
-                        st.toast("Transação registrada!", icon="🚀")
-                        time.sleep(0.5)
+                    if res['acao'] == 'confirmar_dados':
+                        # SALVA NA MEMÓRIA TEMPORÁRIA
+                        st.session_state.temp_transaction = res['dados']
+                        st.session_state.flow_step = "confirming"
+                        st.session_state.chat_history.append({"role": "assistant", "content": f"Entendi: **{res['dados']['categoria']} - R$ {res['dados']['valor']}**. Deseja anexar comprovante?"})
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro: {e}")
+                    
+                    elif res['acao'] == 'pergunta':
+                        st.session_state.chat_history.append({"role": "assistant", "content": res['msg']})
+                    else:
+                        st.session_state.chat_history.append({"role": "assistant", "content": "Não entendi."})
 
-                # Botão CANCELAR
-                if c2.button("❌ Cancelar", use_container_width=True):
-                    st.session_state.pending_transaction = None
-                    st.session_state.messages.append({"role": "assistant", "content": "🚫 Operação cancelada."})
-                    st.rerun()
+    # --- FLUXO 2: Decisão de Anexo (Botões) ---
+    elif st.session_state.flow_step == "confirming":
+        # Container fixo no final para os botões não sumirem
+        with st.container():
+            col_a, col_b = st.columns(2)
+            
+            if col_a.button("📸 Sim, anexar foto", type="primary", use_container_width=True):
+                st.session_state.flow_step = "uploading"
+                st.rerun()
+                
+            if col_b.button("💾 Não, salvar sem anexo", use_container_width=True):
+                # Salva direto
+                dados = st.session_state.temp_transaction
+                salvar_transacao(user['id'], dados, None)
+                st.session_state.chat_history.append({"role": "assistant", "content": "✅ Salvo com sucesso!"})
+                # Reseta
+                st.session_state.temp_transaction = None
+                st.session_state.flow_step = "listening"
+                st.rerun()
 
-# --- 2. DASHBOARD (UI/UX Melhorada) ---
-elif menu == "📊 Dashboard":
-    st.title(f"Visão de {meses_map[mes_sel]}/{ano_sel}")
-    
-    if not df_mes.empty:
-        # Métricas Topo
-        total = df_mes['valor'].sum()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Saldo do Mês", f"R$ {total:,.2f}")
-        c2.metric("Lançamentos", len(df_mes))
-        c3.metric("Média Diária", f"R$ {total/30:,.2f}")
+    # --- FLUXO 3: Upload ---
+    elif st.session_state.flow_step == "uploading":
+        st.info("Faça o upload do comprovante abaixo:")
+        uploaded_file = st.file_uploader("Escolha a imagem", type=['png', 'jpg', 'jpeg', 'pdf'])
         
+        if uploaded_file is not None:
+            if st.button("Confirmar Upload e Salvar", type="primary"):
+                with st.spinner("Enviando imagem..."):
+                    url = upload_imagem(uploaded_file, user['id'])
+                    dados = st.session_state.temp_transaction
+                    salvar_transacao(user['id'], dados, url)
+                    
+                    st.session_state.chat_history.append({"role": "assistant", "content": "✅ Salvo com comprovante!"})
+                    st.session_state.temp_transaction = None
+                    st.session_state.flow_step = "listening"
+                    st.rerun()
+        
+        if st.button("Cancelar anexo"):
+             st.session_state.flow_step = "confirming"
+             st.rerun()
+
+# 2. EXTRATO VISUAL (UI APRIMORADA)
+elif menu == "Extrato Visual":
+    st.title("💳 Extrato")
+    
+    # Filtros
+    c1, c2 = st.columns([2,1])
+    mes_atual = date.today().month
+    mes = c1.slider("Mês", 1, 12, mes_atual)
+    
+    df = carregar_transacoes(user['id'])
+    
+    if not df.empty:
+        df_filtered = df[df['data_dt'].dt.month == mes]
+        
+        # Resumo do Mês
+        total_desp = df_filtered[df_filtered['tipo']!='Receita']['valor'].sum()
+        total_rec = df_filtered[df_filtered['tipo']=='Receita']['valor'].sum()
+        saldo = total_rec - total_desp
+        
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Receitas", f"R$ {total_rec:.2f}")
+        k2.metric("Despesas", f"R$ {total_desp:.2f}")
+        k3.metric("Saldo", f"R$ {saldo:.2f}", delta_color="normal")
+        
+        st.markdown("### Últimos Lançamentos")
         st.markdown("---")
         
-        # Área Principal: Extrato em Cards
-        c_extrato, c_grafico = st.columns([1, 1])
-        
-        with c_extrato:
-            st.subheader("📝 Últimas Movimentações")
-            
-            # Ordena por data mais recente
-            df_show = df_mes.sort_values(by="data_dt", ascending=False).head(10)
-            
-            for index, row in df_show.iterrows():
-                # Lógica Visual do Card
-                icone = get_categoria_icon(row['categoria'])
-                is_receita = row.get('tipo') == 'Receita' # Ajuste se não tiver essa coluna ainda
-                cor_valor = "#00CC96" if is_receita else "#FF4B4B"
-                sinal = "+" if is_receita else "-"
-                
-                # Container Card
-                with st.container(border=True):
-                    col_ico, col_desc, col_val, col_act = st.columns([1, 5, 3, 1])
-                    
-                    with col_ico:
-                        st.markdown(f"<div class='icon-box'>{icone}</div>", unsafe_allow_html=True)
-                    
-                    with col_desc:
-                        st.markdown(f"**{row['descricao']}**")
-                        st.caption(f"{row['data_dt'].strftime('%d/%m')} • {row['categoria']}")
-                    
-                    with col_val:
-                        st.markdown(f"<div style='text-align:right; color:{cor_valor}; font-weight:bold;'>{sinal} R$ {row['valor']:.2f}</div>", unsafe_allow_html=True)
-                    
-                    with col_act:
-                        if row.get('comprovante_url') and str(row['comprovante_url']) != "None":
-                            st.link_button("📎", row['comprovante_url'], help="Ver anexo")
-        
-        with c_grafico:
-            st.subheader("🍩 Distribuição")
-            gastos = df_mes.groupby("categoria")['valor'].sum().reset_index()
-            fig = px.pie(gastos, values='valor', names='categoria', hole=0.6, color_discrete_sequence=px.colors.qualitative.Set3)
-            fig.update_layout(showlegend=True, margin=dict(t=20, b=20, l=20, r=20))
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.subheader("📅 Gasto Diário")
-            diario = df_mes.groupby("data")['valor'].sum().reset_index()
-            fig2 = px.bar(diario, x="data", y="valor", color="valor", color_continuous_scale="Reds")
-            fig2.update_layout(xaxis_title=None, yaxis_title=None, showlegend=False)
-            st.plotly_chart(fig2, use_container_width=True)
-
+        if df_filtered.empty:
+            st.info("Sem lançamentos neste mês.")
+        else:
+            # RENDERIZAÇÃO DOS CARDS (O LOOP MÁGICO)
+            for index, row in df_filtered.iterrows():
+                render_card(row)
     else:
-        st.info("Nenhum dado neste mês. Vá ao Chat e diga 'Gastei...'")
+        st.warning("Nenhuma transação encontrada.")
 
-# --- 3. RELATÓRIOS ---
-elif menu == "🧠 Relatórios":
-    st.title("Consultoria IA")
-    if st.button("Gerar Análise do Mês", type="primary"):
-        with st.spinner("Analisando..."):
-            analise = gerar_analise_mensal_condicional(df_mes)
-            st.markdown("---")
-            st.markdown(analise)
+# 3. ANÁLISES (Mantido Simples)
+elif menu == "Análises":
+    st.title("📊 Gráficos")
+    df = carregar_transacoes(user['id'])
+    if not df.empty:
+        gastos = df[df['tipo'] != 'Receita']
+        fig = px.bar(gastos, x='categoria', y='valor', color='categoria', title="Gastos por Categoria")
+        st.plotly_chart(fig, use_container_width=True)
