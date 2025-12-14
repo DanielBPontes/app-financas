@@ -1,5 +1,5 @@
 streamlit
 pandas
-supabase
 plotly
+supabase
 google-generativeai
