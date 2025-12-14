@@ -297,47 +297,124 @@ elif menu == "Busca & Relatórios":
 
 # --- ABA 3: LANÇAMENTOS ---
 elif menu == "Lançamentos":
-    st.title("📝 Lançamentos")
-    
-    # Formulário
-    with st.container(border=True):
-        st.subheader("Novo Gasto/Receita")
-        with st.form("transacao_form", clear_on_submit=True):
-            c1, c2, c3 = st.columns(3)
-            data_input = c1.date_input("Data", date.today())
-            valor_input = c2.number_input("Valor (R$)", min_value=0.0, step=10.0)
-            tipo_input = c3.selectbox("Tipo", ["Despesa", "Receita"])
-            
-            c4, c5 = st.columns(2)
-            cat_input = c4.selectbox("Categoria", ["Alimentação", "Transporte", "Jogos/Lazer", "Investimentos", "Saúde", "Moradia", "Outros"])
-            desc_input = c5.text_input("Descrição (ex: Gemas Brawl Stars)")
-            
-            recorrente = st.checkbox("Recorrente (Mensal)")
-            
-            if st.form_submit_button("💾 Salvar", type="primary"):
-                try:
-                    salvar_transacao(user['id'], data_input, cat_input, desc_input, valor_input, tipo_input, recorrente)
-                    st.toast("Salvo com sucesso!", icon="✅")
-                    time.sleep(1)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erro: {e}")
+    st.title("📝 Lançamentos Inteligentes")
 
-    # Grid de Edição (Mostra dados do mês selecionado)
+    # --- 1. Dicionário de Categorias e Subcategorias (Seja criativo aqui!) ---
+    CATEGORIAS = {
+        "Alimentação": ["iFood/Delivery", "Mercado", "Restaurante", "Lanche da Tarde", "Café"],
+        "Transporte": ["Uber/99", "Combustível", "Ônibus/Metrô", "Manutenção Carro", "Estacionamento"],
+        "Lazer": ["Cinema/Streaming", "Jogos (Steam/Brawl)", "Barzinho", "Viagem", "Hobby"],
+        "Saúde": ["Farmácia", "Consulta Médica", "Academia", "Terapia", "Exames"],
+        "Investimentos": ["Aporte Mensal", "Reserva de Emergência", "Cripto", "Ações"],
+        "Moradia": ["Aluguel/Condomínio", "Luz/Água", "Internet", "Manutenção Casa"],
+        "Outros": [] # Lista vazia para acionar o input de texto
+    }
+
+    # Inicializa estado para controle de confirmação
+    if 'confirmacao_pendente' not in st.session_state:
+        st.session_state['confirmacao_pendente'] = False
+    
+    # --- 2. Interface de Entrada (Sem st.form para permitir dinamismo) ---
+    with st.container(border=True):
+        st.subheader("Novo Movimento")
+        
+        # Linha 1: Data e Hora
+        c_data, c_hora = st.columns(2)
+        data_sel = c_data.date_input("Data", date.today())
+        hora_sel = c_hora.time_input("Hora", datetime.now().time())
+        
+        # Combina Data e Hora em um objeto datetime
+        data_completa = datetime.combine(data_sel, hora_sel)
+
+        # Linha 2: Valor e Tipo
+        c_val, c_tipo = st.columns(2)
+        # step=0.01 e format="%.2f" garantem a precisão. value=0.0 evita valores pré-preenchidos chatos.
+        valor_input = c_val.number_input("Valor (R$)", min_value=0.0, value=0.0, step=0.01, format="%.2f") 
+        tipo_input = c_tipo.radio("Tipo", ["Despesa", "Receita"], horizontal=True)
+
+        # Linha 3: Categorias Dinâmicas
+        c_cat, c_sub = st.columns(2)
+        
+        # Seleção Principal
+        cat_principal = c_cat.selectbox("Categoria Principal", list(CATEGORIAS.keys()))
+        
+        # Lógica para Subcategoria ou Input de Texto
+        categoria_final = cat_principal # Valor padrão
+        
+        if cat_principal == "Outros":
+            # Se for Outros, pede para digitar e salva O QUE FOI DIGITADO como categoria
+            nome_outro = c_sub.text_input("Especifique o gasto:", placeholder="Ex: Presente de Aniversário")
+            if nome_outro:
+                categoria_final = nome_outro
+        else:
+            # Se for normal, mostra as subcategorias
+            sub_cat = c_sub.selectbox("Detalhamento", CATEGORIAS[cat_principal])
+            # A categoria final salva será "Alimentação - iFood", por exemplo, ou apenas a subcategoria
+            # Sugestão: Salvar a Subcategoria para ficar mais limpo nos gráficos
+            categoria_final = sub_cat
+
+        # Linha 4: Descrição e Recorrência
+        descricao_input = st.text_input("Descrição / Observação (Opcional)", placeholder="Ex: Jantar com a família")
+        recorrente = st.checkbox("É um gasto fixo mensal?")
+
+        st.markdown("---")
+
+        # --- 3. Lógica de Dupla Confirmação ---
+        
+        # Botão Estágio 1: Verificar
+        if not st.session_state['confirmacao_pendente']:
+            if st.button("Verificar Lançamento", type="primary", use_container_width=True):
+                if valor_input > 0:
+                    st.session_state['confirmacao_pendente'] = True
+                    st.rerun()
+                else:
+                    st.warning("⚠️ O valor deve ser maior que zero.")
+        
+        # Botão Estágio 2: Confirmar (Aparece após clicar em verificar)
+        else:
+            st.info(f"🧐 **Confirmação:** R$ {valor_input:.2f} em '{categoria_final}' ({data_completa.strftime('%d/%m %H:%M')})?")
+            
+            col_conf1, col_conf2 = st.columns(2)
+            
+            with col_conf1:
+                if st.button("✅ CONFIRMAR AGORA", type="primary", use_container_width=True):
+                    try:
+                        # Prepara descrição (se vazio, usa a categoria)
+                        desc_final = descricao_input if descricao_input else categoria_final
+                        
+                        salvar_transacao(
+                            user['id'], 
+                            data_completa,  # Passa o datetime completo
+                            categoria_final, # Passa a subcategoria (ex: iFood) ou o texto digitado em Outros
+                            desc_final, 
+                            valor_input, 
+                            tipo_input, 
+                            recorrente
+                        )
+                        st.balloons()
+                        st.toast(f"Lançamento de R$ {valor_input} salvo!", icon="🤑")
+                        
+                        # Reseta o estado
+                        st.session_state['confirmacao_pendente'] = False
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao salvar: {e}")
+            
+            with col_conf2:
+                if st.button("❌ Cancelar / Editar", use_container_width=True):
+                    st.session_state['confirmacao_pendente'] = False
+                    st.rerun()
+
+    # --- Grid de Visualização Rápida ---
     st.divider()
-    st.subheader(f"Editando: {meses_dict[mes_selecionado]}/{ano_selecionado}")
-    if not df_mes.empty:
-        edited_df = st.data_editor(
-            df_mes,
-            column_config={
-                "id": None, "user_id": None, "created_at": None, "data_dt": None,
-                "valor": st.column_config.NumberColumn(format="R$ %.2f"),
-                "data": st.column_config.DateColumn(format="DD/MM/YYYY"),
-            },
-            use_container_width=True, hide_index=True, num_rows="dynamic", key="editor_grid"
+    st.subheader("Últimos Lançamentos")
+    if not df_mes.empty: # Usa o df filtrado pelo mês selecionado na sidebar
+        st.dataframe(
+            df_mes[['data', 'categoria', 'descricao', 'valor']].head(),
+            use_container_width=True,
+            hide_index=True
         )
-    else:
-        st.info("Sem lançamentos neste período.")
 
 # --- ABA 4: SIMULADOR ---
 elif menu == "Simulador Juros":
@@ -354,3 +431,4 @@ elif menu == "Simulador Juros":
             df_calc, final = calcular_investimento_bcb(meses, taxa, aporte)
             st.metric("Resultado Final", f"R$ {final:,.2f}")
             st.plotly_chart(px.area(df_calc, x="Mês", y="Saldo Total"), use_container_width=True)
+
