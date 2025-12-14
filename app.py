@@ -8,7 +8,7 @@ import json
 import google.generativeai as genai
 
 # --- 1. Configuração Mobile-First ---
-st.set_page_config(page_title="FinApp", page_icon="💳", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="AppFinanças", page_icon="💳", layout="wide", initial_sidebar_state="collapsed")
 
 # --- 2. CSS "App Nativo" (A Mágica acontece aqui) ---
 st.markdown("""
@@ -171,7 +171,7 @@ def agente_financeiro_ia(texto_usuario, df_contexto):
 # =======================================================
 if 'user' not in st.session_state: st.session_state['user'] = None
 if not st.session_state['user']:
-    st.markdown("<br><br><h2 style='text-align:center'>FinApp Mobile</h2>", unsafe_allow_html=True)
+    st.markdown("<br><br><h2 style='text-align:center'>App Finanças</h2>", unsafe_allow_html=True)
     with st.form("login"):
         u = st.text_input("Usuário")
         p = st.text_input("Senha", type="password")
@@ -349,3 +349,4 @@ with st.sidebar:
     if st.button("Sair da Conta"):
         st.session_state.clear()
         st.rerun()
+
