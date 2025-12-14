@@ -121,7 +121,7 @@ def interpretar_comando_chat(texto_usuario, historico_recente):
     """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         response = model.generate_content(prompt)
         # Limpeza para garantir que venha só o JSON
         texto_limpo = response.text.replace('```json', '').replace('```', '').strip()
@@ -291,3 +291,4 @@ elif menu == "🧠 Relatórios & IA":
             analise = gerar_analise_mensal_condicional(df_mes)
             st.markdown("---")
             st.markdown(analise)
+
