@@ -1,219 +1,290 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 from supabase import create_client, Client
 from datetime import datetime, date
 import time
 
-# --- Configuração da Página ---
+# --- Configuração da Página e UX ---
 st.set_page_config(
     page_title="Finanças Pro", 
-    page_icon="💳", 
+    page_icon="💸", 
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
+
+# --- CSS Personalizado para UI "Clean" ---
+st.markdown("""
+<style>
+    /* Estilo dos Cards de Métricas */
+    [data-testid="stMetricValue"] {
+        font-size: 26px;
+        font-weight: 700;
+    }
+    /* Cores personalizadas para métricas */
+    div[data-testid="stMetric"]:nth-child(1) [data-testid="stMetricValue"] { color: #FF4B4B; } /* Despesas */
+    div[data-testid="stMetric"]:nth-child(2) [data-testid="stMetricValue"] { color: #00CC96; } /* Investimentos/Saldo */
+    
+    /* Ajuste de padding */
+    .block-container { padding-top: 2rem; }
+</style>
+""", unsafe_allow_html=True)
 
 # --- Conexão com Supabase ---
 @st.cache_resource
 def init_connection():
-    url = st.secrets["supabase"]["url"]
-    key = st.secrets["supabase"]["key"]
-    return create_client(url, key)
+    try:
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["key"]
+        return create_client(url, key)
+    except:
+        return None
 
 supabase: Client = init_connection()
 
-# --- Funções de Banco de Dados (CRUD) ---
+# --- Lógica de Negócios (Backend) ---
 
 def login_user(username, password):
-    """Verifica credenciais no banco PostgreSQL"""
     try:
+        # Em produção, use hash para senhas!
         response = supabase.table("users").select("*").eq("username", username).eq("password", password).execute()
-        if len(response.data) > 0:
-            return response.data[0] # Retorna o objeto do usuário (com ID)
-        return None
-    except Exception as e:
-        st.error(f"Erro de conexão: {e}")
+        return response.data[0] if response.data else None
+    except:
         return None
 
 def carregar_transacoes(user_id):
-    """Busca apenas as transações do usuário logado"""
     response = supabase.table("transactions").select("*").eq("user_id", user_id).order("data", desc=True).execute()
     df = pd.DataFrame(response.data)
     if not df.empty:
-        # Converter string de data para datetime objects
         df['data'] = pd.to_datetime(df['data']).dt.date
+        df['valor'] = pd.to_numeric(df['valor'])
     return df
 
-def salvar_transacao(user_id, data_gasto, categoria, descricao, valor, recorrente):
+def salvar_transacao(user_id, data_gasto, categoria, descricao, valor, tipo, recorrente):
+    # 'tipo' define se é 'Despesa' ou 'Receita' (no banco pode ser positivo/negativo ou ter coluna tipo)
+    # Para simplificar, vamos assumir que o usuário digita positivo e nós tratamos na visualização
     data = {
         "user_id": user_id,
         "data": data_gasto.isoformat(),
         "categoria": categoria,
         "descricao": descricao,
         "valor": float(valor),
-        "recorrente": recorrente
+        "recorrente": recorrente,
+        # Sugestão: Adicionar coluna 'tipo' no seu Supabase: ALTER TABLE transactions ADD COLUMN tipo text;
+        # Se não tiver, trate tudo como despesa ou use valor negativo
     }
     supabase.table("transactions").insert(data).execute()
 
-def atualizar_banco_via_editor(edited_rows, original_df):
-    """Processa as edições feitas na tabela visual"""
-    # O st.data_editor retorna um dicionário com as mudanças.
-    # É complexo processar updates em lote, então faremos iteração simples.
+# --- Lógica da Calculadora (Baseada no BCB) ---
+def calcular_investimento_bcb(meses, taxa_mensal, aporte_mensal):
+    """
+    Simula aplicação com depósitos regulares (regra do BCB: depósito no início do período).
+    Fórmula Futuro: PMT * [ ( (1+i)^n - 1 ) / i ] * (1+i)
+    """
+    taxa_dec = taxa_mensal / 100
+    dados_evolucao = []
     
-    # 1. Identificar linhas deletadas
-    # (O Streamlit data_editor gerencia 'deleted_rows' se num_rows="dynamic")
-    # Para simplificar este exemplo, focaremos na edição de valores existentes.
+    saldo = 0
+    total_aportado = 0
     
-    # Loop pelas linhas editadas (índice do dataframe -> novas colunas)
-    for idx, changes in edited_rows.items():
-        # Pega o ID da transação na linha original
-        transacao_id = original_df.iloc[idx]['id']
+    for m in range(1, int(meses) + 1):
+        total_aportado += aporte_mensal
+        # Juros sobre o saldo anterior + aporte do mês (juros compostos)
+        rendimento_mes = (saldo + aporte_mensal) * taxa_dec
+        saldo = (saldo + aporte_mensal) + rendimento_mes
         
-        # Prepara o payload de atualização
-        payload = {}
-        if "data" in changes: payload["data"] = changes["data"].isoformat() # Se for data, converte
-        if "categoria" in changes: payload["categoria"] = changes["categoria"]
-        if "descricao" in changes: payload["descricao"] = changes["descricao"]
-        if "valor" in changes: payload["valor"] = float(changes["valor"])
-        if "recorrente" in changes: payload["recorrente"] = changes["recorrente"]
+        dados_evolucao.append({
+            "Mês": m,
+            "Total Investido": round(total_aportado, 2),
+            "Rendimento (Juros)": round(saldo - total_aportado, 2),
+            "Saldo Total": round(saldo, 2)
+        })
         
-        if payload:
-            supabase.table("transactions").update(payload).eq("id", transacao_id).execute()
+    return pd.DataFrame(dados_evolucao), saldo
 
-# --- CSS ---
-st.markdown("""
-<style>
-    [data-testid="stMetricValue"] { font-size: 24px; color: #00CC96; }
-    div.stButton > button { width: 100%; border-radius: 5px; }
-</style>
-""", unsafe_allow_html=True)
-
-# --- Gestão de Sessão ---
+# --- Login System ---
 if 'user' not in st.session_state:
     st.session_state['user'] = None
 
-# --- Tela de Login ---
 if not st.session_state['user']:
-    col1, col2, col3 = st.columns([1,2,1])
+    col1, col2, col3 = st.columns([1,1,1])
     with col2:
-        st.title("🔒 Finanças Cloud")
-        st.markdown("Acesse seus dados de qualquer lugar.")
-        
-        with st.form("login"):
+        st.title("🔒 Login")
+        with st.form("login_form"):
             username = st.text_input("Usuário")
             password = st.text_input("Senha", type="password")
-            submitted = st.form_submit_button("Entrar")
-            
-            if submitted:
-                user_data = login_user(username, password)
-                if user_data:
-                    st.session_state['user'] = user_data
-                    st.rerun()
+            if st.form_submit_button("Acessar Sistema"):
+                if supabase:
+                    user = login_user(username, password)
+                    if user:
+                        st.session_state['user'] = user
+                        st.rerun()
+                    else:
+                        st.error("Credenciais inválidas.")
                 else:
-                    st.error("Usuário ou senha inválidos.")
-    st.stop() # Para a execução aqui se não estiver logado
+                    st.error("Erro na conexão com Supabase. Verifique Secrets.")
+    st.stop()
 
 # =======================================================
-# ÁREA LOGADA (O código abaixo só roda se tiver usuário)
+# APLICAÇÃO PRINCIPAL
 # =======================================================
 
 user = st.session_state['user']
 
-# Sidebar
+# Sidebar de Navegação
 with st.sidebar:
-    st.write(f"Usuário: **{user['username']}**")
+    st.image("https://cdn-icons-png.flaticon.com/512/4149/4149666.png", width=50)
+    st.markdown(f"Olá, **{user['username']}**")
+    st.markdown("---")
+    menu = st.radio("Navegação", ["Dashboard", "Lançamentos", "Investimentos (Simulador)"])
+    st.markdown("---")
     if st.button("Sair"):
         st.session_state['user'] = None
         st.rerun()
 
-st.title("💳 Painel Financeiro")
-
-# Carregar Dados
 df = carregar_transacoes(user['id'])
 
-# --- Abas ---
-tab1, tab2, tab3 = st.tabs(["📊 Dashboard & Edição", "📝 Novo Gasto", "🔁 Recorrentes"])
-
-# --- ABA 1: Dashboard ---
-with tab1:
-    col1, col2, col3 = st.columns(3)
+# --- ABA 1: DASHBOARD (Visualização Profissional) ---
+if menu == "Dashboard":
+    st.title("📊 Visão Geral")
     
     if not df.empty:
-        # Filtros de Data
+        # Filtros Rápidos
+        col_f1, col_f2 = st.columns(2)
         mes_atual = date.today().month
-        df_mes = df[pd.to_datetime(df['data']).dt.month == mes_atual]
+        ano_atual = date.today().year
         
-        total_mes = df_mes['valor'].sum()
-        total_geral = df['valor'].sum()
+        # Dados do Mês
+        df_mes = df[(pd.to_datetime(df['data']).dt.month == mes_atual) & (pd.to_datetime(df['data']).dt.year == ano_atual)]
         
-        col1.metric("Gastos (Mês Atual)", f"R$ {total_mes:.2f}")
-        col2.metric("Total Acumulado", f"R$ {total_geral:.2f}")
-        col3.metric("Qtd. Lançamentos", len(df_mes))
+        total_gasto = df_mes['valor'].sum()
+        # Simulação de "Budget" (Poderia vir do banco)
+        budget = 3000.00 
+        saldo_restante = budget - total_gasto
         
-        st.divider()
-        st.subheader("📋 Editar Lançamentos")
+        # --- CARDS KPI ---
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Gastos (Mês Atual)", f"R$ {total_gasto:,.2f}", delta=f"{-total_gasto/budget*100:.1f}% do Budget", delta_color="inverse")
+        col2.metric("Saldo Estimado", f"R$ {saldo_restante:,.2f}")
+        col3.metric("Média por Gasto", f"R$ {df_mes['valor'].mean():,.2f}" if not df_mes.empty else "R$ 0,00")
         
-        # Editor de Dados
-        edited_df = st.data_editor(
-            df,
-            column_config={
-                "id": None, # Esconde o ID
-                "user_id": None, # Esconde o User ID
-                "created_at": None,
-                "valor": st.column_config.NumberColumn(format="R$ %.2f"),
-                "recorrente": st.column_config.CheckboxColumn(default=False),
-                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
-            },
-            hide_index=True,
-            use_container_width=True,
-            num_rows="fixed", # Edição de valores existentes (inserção na outra aba para segurança)
-            key="editor_dados"
-        )
+        st.markdown("---")
+
+        # --- GRÁFICOS (PLOTLY) ---
+        c1, c2 = st.columns([1, 1])
         
-        # Botão para salvar edições
-        if st.button("💾 Salvar Alterações da Tabela"):
-            # O Streamlit armazena o estado das edições na session_state
-            edicoes = st.session_state["editor_dados"]["edited_rows"]
+        with c1:
+            st.subheader("Onde seu dinheiro vai?")
+            # Agrupamento por Categoria
+            gastos_cat = df_mes.groupby("categoria")['valor'].sum().reset_index()
+            fig_pie = px.pie(gastos_cat, values='valor', names='categoria', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+            fig_pie.update_layout(showlegend=True, margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig_pie, use_container_width=True)
             
-            if edicoes:
-                with st.spinner("Atualizando banco de dados..."):
-                    atualizar_banco_via_editor(edicoes, df)
-                    st.success("Dados atualizados!")
-                    time.sleep(1)
-                    st.rerun()
-            else:
-                st.info("Nenhuma alteração detectada.")
+        with c2:
+            st.subheader("Evolução Diária")
+            # Agrupamento por Dia
+            gastos_dia = df_mes.groupby("data")['valor'].sum().reset_index()
+            fig_bar = px.bar(gastos_dia, x='data', y='valor', color='valor', color_continuous_scale='Bluered')
+            fig_bar.update_layout(xaxis_title=None, yaxis_title="R$", showlegend=False)
+            st.plotly_chart(fig_bar, use_container_width=True)
             
     else:
-        st.info("Nenhum dado encontrado. Faça seu primeiro lançamento na aba ao lado!")
+        st.info("Nenhum dado lançado ainda. Vá para a aba 'Lançamentos'.")
 
-# --- ABA 2: Novo Lançamento ---
-with tab2:
-    st.subheader("Adicionar Despesa")
-    with st.form("entry_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        data_input = c1.date_input("Data", date.today())
-        valor_input = c2.number_input("Valor", min_value=0.01, step=10.0, format="%.2f")
-        
-        cat_input = c1.selectbox("Categoria", ["Alimentação", "Transporte", "Lazer", "Casa", "Outros"])
-        desc_input = c2.text_input("Descrição")
-        recorrente_input = st.checkbox("Recorrente?")
-        
-        if st.form_submit_button("Lançar"):
-            try:
-                salvar_transacao(user['id'], data_input, cat_input, desc_input, valor_input, recorrente_input)
-                st.success("✅ Salvo no Supabase!")
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Erro ao salvar: {e}")
+# --- ABA 2: LANÇAMENTOS (Controle de Dados) ---
+elif menu == "Lançamentos":
+    st.title("📝 Gestão de Transações")
+    
+    tab_form, tab_grid = st.tabs(["Novo Lançamento", "Tabela Completa"])
+    
+    with tab_form:
+        with st.container(border=True):
+            with st.form("transacao_form", clear_on_submit=True):
+                c1, c2, c3 = st.columns(3)
+                data_input = c1.date_input("Data", date.today())
+                valor_input = c2.number_input("Valor (R$)", min_value=0.0, step=10.0)
+                tipo_input = c3.selectbox("Tipo", ["Despesa", "Receita"]) # Preparado para futuro
+                
+                c4, c5 = st.columns(2)
+                cat_input = c4.selectbox("Categoria", ["Alimentação", "Transporte", "Moradia", "Lazer", "Investimentos", "Saúde", "Outros"])
+                desc_input = c5.text_input("Descrição")
+                
+                recorrente = st.checkbox("Recorrente (Mensal)")
+                
+                if st.form_submit_button("💾 Salvar Lançamento", type="primary"):
+                    try:
+                        salvar_transacao(user['id'], data_input, cat_input, desc_input, valor_input, tipo_input, recorrente)
+                        st.success("Registrado com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro: {e}")
 
-# --- ABA 3: Recorrentes ---
-with tab3:
-    st.subheader("Contas Fixas")
-    if not df.empty:
-        fixos = df[df['recorrente'] == True]
-        if not fixos.empty:
-            st.dataframe(fixos[['data', 'categoria', 'descricao', 'valor']], hide_index=True)
-            st.markdown(f"**Total Fixo Estimado:** R$ {fixos['valor'].sum():.2f}")
+    with tab_grid:
+        if not df.empty:
+            st.markdown("### Histórico Recente")
+            # Tabela Editável
+            edited_df = st.data_editor(
+                df,
+                column_config={
+                    "id": None, "user_id": None, "created_at": None,
+                    "valor": st.column_config.NumberColumn(format="R$ %.2f"),
+                    "data": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                    "recorrente": st.column_config.CheckboxColumn(default=False)
+                },
+                use_container_width=True,
+                hide_index=True,
+                num_rows="dynamic",
+                key="editor_grid"
+            )
+            # Obs: A lógica de salvar edição (update) seria similar ao código anterior
         else:
-            st.write("Sem contas recorrentes.")
+            st.write("Sem dados.")
+
+# --- ABA 3: INVESTIMENTOS (Calculadora BCB) ---
+elif menu == "Investimentos (Simulador)":
+    st.title("📈 Simulador de Juros Compostos")
+    st.markdown("Baseado na metodologia da **Calculadora do Cidadão (BCB)** para depósitos regulares.")
+    
+    with st.container(border=True):
+        col1, col2, col3 = st.columns(3)
+        
+        # Inputs iguais ao da imagem do BCB
+        meses = col1.number_input("Número de meses", min_value=1, value=12, step=1)
+        taxa = col2.number_input("Taxa de juros mensal (%)", min_value=0.01, value=0.85, step=0.01, format="%.2f")
+        aporte = col3.number_input("Valor do depósito regular (R$)", min_value=0.0, value=200.0, step=50.0)
+        
+        if st.button("Calcular", type="primary", use_container_width=True):
+            df_calc, valor_final = calcular_investimento_bcb(meses, taxa, aporte)
+            
+            # --- RESULTADOS ---
+            st.divider()
+            c_res1, c_res2, c_res3 = st.columns(3)
+            
+            total_investido = aporte * meses
+            total_juros = valor_final - total_investido
+            
+            c_res1.metric("Valor Total Investido", f"R$ {total_investido:,.2f}")
+            c_res2.metric("Total em Juros", f"R$ {total_juros:,.2f}", delta="Lucro", delta_color="normal")
+            c_res3.metric("Valor Obtido ao Final", f"R$ {valor_final:,.2f}", delta="Montante Final")
+            
+            # --- GRÁFICO "BOLA DE NEVE" ---
+            st.subheader("Evolução do Patrimônio")
+            
+            # Formatar dados para o Plotly (Melt para criar linhas comparativas)
+            df_chart = df_calc.melt(id_vars=["Mês"], value_vars=["Total Investido", "Saldo Total"], var_name="Tipo", value_name="Reais")
+            
+            fig = px.area(
+                df_chart, 
+                x="Mês", 
+                y="Reais", 
+                color="Tipo", 
+                color_discrete_map={"Total Investido": "#AAB1C2", "Saldo Total": "#00CC96"},
+                title="Efeito dos Juros Compostos ao Longo do Tempo"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            with st.expander("Ver Tabela Detalhada mês a mês"):
+                st.dataframe(df_calc, use_container_width=True)
