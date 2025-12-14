@@ -136,7 +136,7 @@ def interpretar_comando_chat(texto_usuario):
     Exemplo: {{"acao": "confirmar", "dados": {{"data": "2024-12-14", "valor": 50.00, "categoria": "Alimentação", "descricao": "Pizza", "tipo": "Despesa"}}, "msg_ia": "Entendi: Pizza (R$ 50)"}}
     """
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         response = model.generate_content(prompt)
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
         return json.loads(clean_text)
@@ -373,3 +373,4 @@ elif menu == "🧠 Relatórios":
             analise = gerar_analise_mensal_condicional(df_mes)
             st.markdown("---")
             st.markdown(analise)
+
