@@ -190,6 +190,12 @@ if menu == "Dashboard":
             fig_bar.update_layout(xaxis_title=None, yaxis_title="R$", showlegend=False)
             st.plotly_chart(fig_bar, use_container_width=True)
             
+       with st.expander("🤖 Consultar IA Financeira"):
+          if st.button("Gerar Análise do Mês"):
+          with st.spinner("O robô está analisando suas contas..."):
+          analise = analisar_financas_com_ia(df_mes) # Usa o dataframe já filtrado do mês
+          st.markdown(analise)
+            
     else:
         st.info("Nenhum dado lançado ainda. Vá para a aba 'Lançamentos'.")
 
@@ -288,4 +294,5 @@ elif menu == "Investimentos (Simulador)":
             
             with st.expander("Ver Tabela Detalhada mês a mês"):
                 st.dataframe(df_calc, use_container_width=True)
+
 
