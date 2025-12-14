@@ -67,13 +67,13 @@ def carregar_transacoes(user_id):
     except: return pd.DataFrame()
 
 def upload_comprovante(arquivo, user_id):
-    """Envia arquivo para o Bucket 'comprovantes' e retorna URL pública"""
+    """Envia arquivo para o Bucket 'Comprovantes' e retorna URL pública"""
     try:
         # Cria nome único: ID_TIMESTAMP_NOME
         nome_arquivo = f"{user_id}_{int(time.time())}_{arquivo.name}"
         arquivo_bytes = arquivo.getvalue()
         
-        bucket_name = "comprovantes"
+        bucket_name = "Comprovantes"
         
         # Upload
         supabase.storage.from_(bucket_name).upload(nome_arquivo, arquivo_bytes, {"content-type": arquivo.type})
@@ -395,3 +395,4 @@ elif menu == "🧠 Consultoria IA":
             analise = gerar_analise_mensal(df_mes)
             st.markdown("### Relatório do Mês")
             st.markdown(analise)
+
