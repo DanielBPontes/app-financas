@@ -297,121 +297,114 @@ elif menu == "Busca & Relatórios":
 
 # --- ABA 3: LANÇAMENTOS ---
 elif menu == "Lançamentos":
-    st.title("📝 Lançamentos Inteligentes")
+    st.title("🚀 Lançamento Rápido")
 
-    # --- 1. Dicionário de Categorias e Subcategorias (Seja criativo aqui!) ---
+    # --- Configurações Iniciais ---
     CATEGORIAS = {
-        "Alimentação": ["iFood/Delivery", "Mercado", "Restaurante", "Lanche da Tarde", "Café"],
-        "Transporte": ["Uber/99", "Combustível", "Ônibus/Metrô", "Manutenção Carro", "Estacionamento"],
-        "Lazer": ["Cinema/Streaming", "Jogos (Steam/Brawl)", "Barzinho", "Viagem", "Hobby"],
-        "Saúde": ["Farmácia", "Consulta Médica", "Academia", "Terapia", "Exames"],
-        "Investimentos": ["Aporte Mensal", "Reserva de Emergência", "Cripto", "Ações"],
-        "Moradia": ["Aluguel/Condomínio", "Luz/Água", "Internet", "Manutenção Casa"],
-        "Outros": [] # Lista vazia para acionar o input de texto
+        "Alimentação": ["iFood/Delivery", "Mercado", "Restaurante", "Lanche/Café"],
+        "Transporte": ["Uber/99", "Combustível", "Ônibus/Metrô", "Manutenção", "Estacionamento"],
+        "Lazer": ["Jogos/Steam", "Cinema/Streaming", "Bar/Rolê", "Viagem", "Hobby"],
+        "Saúde": ["Farmácia", "Médico/Dentista", "Academia", "Terapia"],
+        "Investimentos": ["Aporte Mensal", "Cripto", "Reserva Emergência"],
+        "Casa": ["Aluguel", "Luz/Água/Net", "Supermercado (Limpeza)", "Manutenção"],
+        "Outros": [] 
     }
 
-    # Inicializa estado para controle de confirmação
     if 'confirmacao_pendente' not in st.session_state:
         st.session_state['confirmacao_pendente'] = False
     
-    # --- 2. Interface de Entrada (Sem st.form para permitir dinamismo) ---
+    # --- Função para limpar o valor digitado (Aceita 10,50 ou 10.50) ---
+    def limpar_valor(valor_str):
+        if not valor_str: return 0.0
+        # Troca vírgula por ponto para o Python entender
+        v = valor_str.replace(',', '.')
+        try:
+            return float(v)
+        except:
+            return 0.0
+
+    # --- Interface Clean ---
     with st.container(border=True):
-        st.subheader("Novo Movimento")
+        # 1. Valor (Text Input para digitação livre) e Tipo
+        c_val, c_tipo = st.columns([1, 1])
         
-        # Linha 1: Data e Hora
-        c_data, c_hora = st.columns(2)
-        data_sel = c_data.date_input("Data", date.today())
-        hora_sel = c_hora.time_input("Hora", datetime.now().time())
+        # O text_input permite digitar "10,50" rápido sem brigar com o campo
+        valor_texto = c_val.text_input("Valor (R$)", placeholder="Ex: 10 ou 15,90")
+        valor_final = limpar_valor(valor_texto) # Converte em tempo real
         
-        # Combina Data e Hora em um objeto datetime
-        data_completa = datetime.combine(data_sel, hora_sel)
+        tipo_input = c_tipo.radio("Tipo", ["Despesa", "Receita"], horizontal=True, label_visibility="collapsed")
 
-        # Linha 2: Valor e Tipo
-        c_val, c_tipo = st.columns(2)
-        # step=0.01 e format="%.2f" garantem a precisão. value=0.0 evita valores pré-preenchidos chatos.
-        valor_input = c_val.number_input("Valor (R$)", min_value=0.0, value=0.0, step=0.01, format="%.2f") 
-        tipo_input = c_tipo.radio("Tipo", ["Despesa", "Receita"], horizontal=True)
+        # 2. Data (Hora será automática)
+        # Colocamos apenas Data. A hora pegaremos o 'now' no momento do save.
+        data_sel = st.date_input("Data do Gasto", date.today())
 
-        # Linha 3: Categorias Dinâmicas
+        # 3. Categorias Inteligentes
         c_cat, c_sub = st.columns(2)
+        cat_principal = c_cat.selectbox("Categoria", list(CATEGORIAS.keys()))
         
-        # Seleção Principal
-        cat_principal = c_cat.selectbox("Categoria Principal", list(CATEGORIAS.keys()))
-        
-        # Lógica para Subcategoria ou Input de Texto
-        categoria_final = cat_principal # Valor padrão
-        
+        categoria_final = cat_principal
         if cat_principal == "Outros":
-            # Se for Outros, pede para digitar e salva O QUE FOI DIGITADO como categoria
-            nome_outro = c_sub.text_input("Especifique o gasto:", placeholder="Ex: Presente de Aniversário")
-            if nome_outro:
-                categoria_final = nome_outro
+            nome_outro = c_sub.text_input("Qual o gasto?", placeholder="Digite o nome...")
+            if nome_outro: categoria_final = nome_outro
         else:
-            # Se for normal, mostra as subcategorias
-            sub_cat = c_sub.selectbox("Detalhamento", CATEGORIAS[cat_principal])
-            # A categoria final salva será "Alimentação - iFood", por exemplo, ou apenas a subcategoria
-            # Sugestão: Salvar a Subcategoria para ficar mais limpo nos gráficos
+            sub_cat = c_sub.selectbox("Detalhe", CATEGORIAS[cat_principal])
             categoria_final = sub_cat
 
-        # Linha 4: Descrição e Recorrência
-        descricao_input = st.text_input("Descrição / Observação (Opcional)", placeholder="Ex: Jantar com a família")
-        recorrente = st.checkbox("É um gasto fixo mensal?")
+        # 4. Descrição (Opcional)
+        descricao_input = st.text_input("Descrição (Opcional)", placeholder="Ex: Almoço com a equipe")
 
         st.markdown("---")
 
-        # --- 3. Lógica de Dupla Confirmação ---
-        
-        # Botão Estágio 1: Verificar
+        # --- Lógica de Confirmação ---
         if not st.session_state['confirmacao_pendente']:
-            if st.button("Verificar Lançamento", type="primary", use_container_width=True):
-                if valor_input > 0:
+            # Botão grande para verificar
+            if st.button("Verificar e Salvar", type="primary", use_container_width=True):
+                if valor_final > 0:
                     st.session_state['confirmacao_pendente'] = True
                     st.rerun()
                 else:
-                    st.warning("⚠️ O valor deve ser maior que zero.")
-        
-        # Botão Estágio 2: Confirmar (Aparece após clicar em verificar)
+                    st.warning("⚠️ Digite um valor válido (ex: 10,50)")
         else:
-            st.info(f"🧐 **Confirmação:** R$ {valor_input:.2f} em '{categoria_final}' ({data_completa.strftime('%d/%m %H:%M')})?")
+            # Captura hora exata AGORA
+            hora_atual = datetime.now().time()
+            data_completa = datetime.combine(data_sel, hora_atual)
+            
+            # Mostra Resumo Bonito
+            st.info(f"💾 **Confirmar:** R$ {valor_final:.2f} em **{categoria_final}**?")
+            st.caption(f"Data/Hora do registro: {data_completa.strftime('%d/%m/%Y às %H:%M')}")
             
             col_conf1, col_conf2 = st.columns(2)
-            
             with col_conf1:
-                if st.button("✅ CONFIRMAR AGORA", type="primary", use_container_width=True):
+                if st.button("✅ SIM, SALVAR", type="primary", use_container_width=True):
                     try:
-                        # Prepara descrição (se vazio, usa a categoria)
                         desc_final = descricao_input if descricao_input else categoria_final
                         
                         salvar_transacao(
                             user['id'], 
-                            data_completa,  # Passa o datetime completo
-                            categoria_final, # Passa a subcategoria (ex: iFood) ou o texto digitado em Outros
+                            data_completa, 
+                            categoria_final, 
                             desc_final, 
-                            valor_input, 
+                            valor_final, 
                             tipo_input, 
-                            recorrente
+                            False # Recorrente check removido da UI rápida, adicione se quiser
                         )
-                        st.balloons()
-                        st.toast(f"Lançamento de R$ {valor_input} salvo!", icon="🤑")
-                        
-                        # Reseta o estado
+                        st.toast(f"R$ {valor_final} salvo!", icon="🚀")
                         st.session_state['confirmacao_pendente'] = False
-                        time.sleep(1)
+                        time.sleep(0.5)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Erro ao salvar: {e}")
+                        st.error(f"Erro: {e}")
             
             with col_conf2:
-                if st.button("❌ Cancelar / Editar", use_container_width=True):
+                if st.button("❌ Corrigir", use_container_width=True):
                     st.session_state['confirmacao_pendente'] = False
                     st.rerun()
 
-    # --- Grid de Visualização Rápida ---
-    st.divider()
-    st.subheader("Últimos Lançamentos")
-    if not df_mes.empty: # Usa o df filtrado pelo mês selecionado na sidebar
+    # --- Grid Rápido ---
+    if not df_mes.empty:
+        st.caption("Últimos lançamentos do mês:")
         st.dataframe(
-            df_mes[['data', 'categoria', 'descricao', 'valor']].head(),
+            df_mes[['data', 'categoria', 'valor']].head(3),
             use_container_width=True,
             hide_index=True
         )
@@ -431,4 +424,5 @@ elif menu == "Simulador Juros":
             df_calc, final = calcular_investimento_bcb(meses, taxa, aporte)
             st.metric("Resultado Final", f"R$ {final:,.2f}")
             st.plotly_chart(px.area(df_calc, x="Mês", y="Saldo Total"), use_container_width=True)
+
 
