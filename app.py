@@ -112,7 +112,7 @@ def analisar_financas(df_mes):
     total = df_mes['valor'].sum()
     prompt = f"Analise estes gastos do mês (Total R$ {total}):\n{resumo}\nSeja breve, direto e dê uma dica de ouro."
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         return model.generate_content(prompt).text
     except Exception as e: return f"Erro IA: {e}"
 
@@ -367,3 +367,4 @@ elif menu == "Simulador":
             
             st.markdown("### Evolução")
             st.plotly_chart(px.area(df_calc, x="Mês", y="Saldo Total"), use_container_width=True)
+
