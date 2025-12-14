@@ -160,7 +160,7 @@ if menu == "Dashboard":
         
         total_gasto = df_mes['valor'].sum()
         # Simulação de "Budget" (Poderia vir do banco)
-        budget = 3000.00 
+        budget = 2173.79 
         saldo_restante = budget - total_gasto
         
         # --- CARDS KPI ---
@@ -288,3 +288,4 @@ elif menu == "Investimentos (Simulador)":
             
             with st.expander("Ver Tabela Detalhada mês a mês"):
                 st.dataframe(df_calc, use_container_width=True)
+
