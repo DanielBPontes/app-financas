@@ -28,7 +28,6 @@ st.markdown("""
         font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.2);
     }
     .stButton button { width: 100%; border-radius: 12px; font-weight: 600; }
-    /* Ajuste Microfone */
     div[data-testid="stAudioInput"] { margin-top: -10px; margin-bottom: 10px; }
     div[data-testid="stAudioInput"] label { display: none; }
     .app-card {
@@ -54,7 +53,7 @@ try:
     else: IA_AVAILABLE = False
 except: IA_AVAILABLE = False
 
-# --- Funções ---
+# --- Funções Auxiliares ---
 def carregar_transacoes(user_id, limite=None):
     try:
         query = supabase.table("transactions").select("*").eq("user_id", user_id).order("data", desc=True)
@@ -62,12 +61,10 @@ def carregar_transacoes(user_id, limite=None):
         res = query.execute()
         df = pd.DataFrame(res.data)
         if not df.empty:
-            # Conversão segura para datetime
-            df['data_dt'] = pd.to_datetime(df['data'], errors='coerce')
+            # Garante conversão inicial, mas deixa o tratamento fino para o display
             df['valor'] = pd.to_numeric(df['valor'])
         return df
     except Exception as e:
-        print(f"Erro ao carregar: {e}")
         return pd.DataFrame()
 
 def executar_sql(acao, dados, user_id):
@@ -78,7 +75,6 @@ def executar_sql(acao, dados, user_id):
             tabela.insert(dados).execute()
         elif acao == 'update':
             if not dados.get('id'): return False
-            # Remove chaves inválidas para update
             payload = {k: v for k, v in dados.items() if k in ['valor', 'descricao', 'categoria', 'data', 'tipo']}
             tabela.update(payload).eq("id", dados['id']).eq("user_id", user_id).execute()
         elif acao == 'delete':
@@ -90,56 +86,64 @@ def executar_sql(acao, dados, user_id):
 def fmt_real(valor):
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- Agente IA Robusto ---
+# --- Agente IA (Com Limpeza de JSON) ---
+def limpar_json(texto):
+    """Remove formatação Markdown que a IA as vezes coloca"""
+    texto = texto.replace("```json", "").replace("```", "").strip()
+    return json.loads(texto)
+
 def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
     if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA Off"}
     
-    # Contexto limitado para economizar tokens e evitar confusão
     contexto = "[]"
     if not df_contexto.empty:
-        contexto = df_contexto[['id', 'data', 'descricao', 'valor', 'categoria']].head(5).to_json(orient="records")
+        # Pega apenas colunas essenciais para economizar tokens
+        contexto = df_contexto[['data', 'descricao', 'valor', 'categoria']].head(5).to_json(orient="records")
 
     prompt = f"""
-    Contexto Financeiro: {contexto}
+    Atue como um extrator de dados financeiros.
     Hoje: {date.today()}.
+    Histórico Recente: {contexto}
     
-    TAREFA: Analise o input do usuário e extraia uma transação financeira.
-    1. Se for texto como "Almoço 30", assuma "Despesa".
-    2. Valores decimais USE PONTO (Ex: 30.50).
-    3. Responda APENAS JSON.
+    INSTRUÇÕES:
+    1. Identifique: Valor (float com ponto), Descrição, Categoria, Tipo (Receita/Despesa).
+    2. Data: Se não citada, use hoje ({date.today()}).
+    3. Responda APENAS o JSON puro, sem markdown.
     
-    Input Usuário:
+    FORMATO JSON ESPERADO:
+    {{
+        "acao": "insert",
+        "dados": {{
+            "data": "YYYY-MM-DD",
+            "valor": 0.00,
+            "categoria": "Outros",
+            "descricao": "Item",
+            "tipo": "Despesa"
+        }},
+        "msg_ia": "Confirmação curta"
+    }}
     """
     
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         if tipo_entrada == "audio":
-            audio_bytes = entrada.getvalue()
-            # Prompt específico para áudio
             response = model.generate_content(
-                [prompt, {"mime_type": "audio/wav", "data": audio_bytes}, "Transcreva e extraia o JSON."],
+                [prompt, {"mime_type": "audio/wav", "data": entrada.getvalue()}, "Extraia o JSON desta fala."],
                 generation_config={"response_mime_type": "application/json"}
             )
         else:
-            full_prompt = f"{prompt} '{entrada}'"
+            full_prompt = f"{prompt}\nEntrada do Usuário: '{entrada}'"
             response = model.generate_content(full_prompt, generation_config={"response_mime_type": "application/json"})
             
-        result = json.loads(response.text)
-        
-        # Validação básica do JSON retornado
-        if "dados" not in result or "acao" not in result:
-             # Tentativa de correção se a IA errar a estrutura
-             return {"acao": "erro", "msg": "Estrutura inválida da IA"}
-             
-        return result
+        # Tenta limpar e converter
+        return limpar_json(response.text)
 
     except Exception as e:
-        print(f"ERRO IA: {e}") # Debug no console
-        return {"acao": "erro", "msg": f"Erro ao processar: {str(e)}"}
+        return {"acao": "erro", "msg": f"Erro ao processar (Tente falar mais devagar): {str(e)}"}
 
 # =======================================================
-# APP
+# APP LÓGICA
 # =======================================================
 if 'user' not in st.session_state: st.session_state['user'] = None
 
@@ -149,8 +153,8 @@ if not st.session_state['user']:
         u = st.text_input("User")
         p = st.text_input("Pass", type="password")
         if st.form_submit_button("Entrar"):
+            # Mock login or Supabase logic
             try:
-                # Login Simplificado para teste (ajuste conforme sua tabela users)
                 resp = supabase.table("users").select("*").eq("username", u).eq("password", p).execute()
                 if resp.data: st.session_state['user'] = resp.data[0]; st.rerun()
                 else: st.error("Inválido")
@@ -163,77 +167,66 @@ df_total = carregar_transacoes(user['id'], 100)
 with st.sidebar:
     if st.button("Sair"): st.session_state.clear(); st.rerun()
 
-# Navegação
 nav = st.radio("Menu", ["Chat", "Extrato", "Análise"], label_visibility="collapsed")
 st.markdown("---")
 
 # =======================================================
-# 1. CHAT (Correção de Loop)
+# 1. CHAT (Correção Loop + JSON)
 # =======================================================
 if nav == "Chat":
     if "msgs" not in st.session_state: st.session_state.msgs = []
     if "op_pendente" not in st.session_state: st.session_state.op_pendente = None
-    
-    # Chave única para o audio input baseada em timestamp para resetar se necessário
-    if "audio_key" not in st.session_state: st.session_state.audio_key = 0
+    if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
 
-    # Histórico
     for m in st.session_state.msgs:
         with st.chat_message(m["role"]): st.markdown(m["content"])
 
     if not st.session_state.op_pendente:
-        # Sugestões
+        # Sugestões Rápidas
         c1, c2, c3 = st.columns(3)
-        btn_almoco = c1.button("🍔 Almoço")
-        btn_uber = c2.button("🚗 Uber")
-        btn_pix = c3.button("💰 Recebi")
+        sugestao = None
+        if c1.button("🍔 Almoço"): sugestao = "Almoço 30 reais"
+        if c2.button("🚗 Uber"): sugestao = "Uber 15 reais"
+        if c3.button("💰 Recebi"): sugestao = "Recebi 50 reais"
 
         # Inputs
-        # Importante: A ordem de checagem define a prioridade
-        audio_val = st.audio_input("Falar", label_visibility="collapsed", key=f"audio_{st.session_state.audio_key}")
+        # O truque do 'key' dinâmico as vezes reseta o componente, vamos usar fixo
+        audio_val = st.audio_input("Falar", label_visibility="collapsed")
         text_val = st.chat_input("Digite...")
 
-        input_final = None
-        tipo_final = None
+        final_input = None
+        tipo = "texto"
 
-        # Lógica de Prioridade: Botão > Texto > Áudio Novo
-        if btn_almoco: 
-            input_final = "Almoço 30 reais"; tipo_final = "texto"
-        elif btn_uber:
-            input_final = "Uber 15 reais"; tipo_final = "texto"
-        elif btn_pix:
-            input_final = "Recebi pix 50 reais"; tipo_final = "texto"
+        if sugestao:
+            final_input = sugestao
+            st.session_state.last_audio_id = audio_val # Ignora áudio atual se clicou botão
         elif text_val:
-            input_final = text_val; tipo_final = "texto"
+            final_input = text_val
+            st.session_state.last_audio_id = audio_val # Ignora áudio atual se digitou
         elif audio_val:
-            # Verifica se este audio já foi processado nesta sessão
-            if "last_audio" not in st.session_state or st.session_state.last_audio != audio_val:
-                input_final = audio_val
-                tipo_final = "audio"
-                st.session_state.last_audio = audio_val # Marca como lido
-            
-        # Processamento
-        if input_final:
-            if tipo_final == "texto":
-                st.session_state.msgs.append({"role": "user", "content": input_final})
+            # Só processa se o áudio mudou desde a última vez
+            if audio_val != st.session_state.last_audio_id:
+                final_input = audio_val
+                tipo = "audio"
+                st.session_state.last_audio_id = audio_val
+
+        if final_input:
+            if tipo == "texto":
+                st.session_state.msgs.append({"role": "user", "content": final_input})
             else:
-                st.session_state.msgs.append({"role": "user", "content": "🎤 *Áudio enviado*"})
+                st.session_state.msgs.append({"role": "user", "content": "🎤 *Áudio Enviado*"})
 
             with st.chat_message("assistant"):
-                with st.spinner("Pensando..."):
-                    res = agente_financeiro_ia(input_final, df_total, tipo_final)
+                with st.spinner("Processando..."):
+                    res = agente_financeiro_ia(final_input, df_total, tipo)
                     
-                    if res['acao'] in ['insert', 'update', 'delete']:
+                    if res.get('acao') == 'insert':
                         st.session_state.op_pendente = res
                         st.rerun()
-                    elif res['acao'] == 'erro':
-                        msg = f"Erro: {res.get('msg')}"
-                        st.error(msg)
-                        st.session_state.msgs.append({"role": "assistant", "content": msg})
+                    elif res.get('acao') == 'erro':
+                        st.error(f"IA: {res.get('msg')}")
                     else:
-                        msg = res.get('msg_ia', str(res))
-                        st.markdown(msg)
-                        st.session_state.msgs.append({"role": "assistant", "content": msg})
+                        st.markdown(res.get('msg_ia', "Não entendi."))
 
     # Confirmação
     if st.session_state.op_pendente:
@@ -241,107 +234,115 @@ if nav == "Chat":
         d = op.get('dados', {})
         
         with st.container():
-            st.info(f"CONFIRMAR: {op.get('acao')}")
-            st.code(f"{d.get('descricao')} | R$ {d.get('valor')}")
+            st.info("CONFIRMAR LANÇAMENTO?")
+            st.markdown(f"**{d.get('descricao')}**")
+            st.markdown(f"R$ {d.get('valor')} ({d.get('tipo')})")
             
             c1, c2 = st.columns(2)
-            if c1.button("✅ Sim", type="primary"):
+            if c1.button("✅ Confirmar", type="primary"):
                 final = d.copy()
                 final['user_id'] = user['id']
-                if executar_sql(op['acao'], final, user['id']):
-                    st.toast("Sucesso!")
-                    st.session_state.msgs.append({"role": "assistant", "content": "✅ Feito!"})
+                if executar_sql('insert', final, user['id']):
+                    st.toast("Salvo!")
+                    st.session_state.msgs.append({"role": "assistant", "content": "✅ Salvo."})
                 st.session_state.op_pendente = None
-                # Incrementa key do audio para "limpar" o componente visualmente
-                st.session_state.audio_key += 1 
                 time.sleep(1)
                 st.rerun()
-                
-            if c2.button("❌ Não"):
+            if c2.button("❌ Cancelar"):
                 st.session_state.op_pendente = None
                 st.rerun()
 
 # =======================================================
-# 2. EXTRATO (Correção Data Editor)
+# 2. EXTRATO (Correção Crítica de Data)
 # =======================================================
 elif nav == "Extrato":
     st.subheader("Extrato")
     
     if not df_total.empty:
-        # Prepara dados para o editor
-        # 1. Copia o DF
+        # PREPARAÇÃO BLINDADA DE DADOS
         df_edit = df_total.copy()
         
-        # 2. Garante que é Datetime
+        # 1. Força conversão para datetime, erros viram NaT
         df_edit['data'] = pd.to_datetime(df_edit['data'], errors='coerce')
         
-        # 3. Remove datas inválidas (NaT) para não quebrar o editor
+        # 2. Remove linhas onde a data falhou (essencial para não quebrar o editor)
         df_edit = df_edit.dropna(subset=['data'])
         
-        # 4. Converte para DATE OBJECT (O segredo para não dar erro no DateColumn)
+        # 3. Converte para DATE object do Python (O editor exige isso para column_config.DateColumn)
         df_edit['data'] = df_edit['data'].dt.date
         
-        # 5. Seleciona colunas
+        # 4. Filtra colunas
         df_edit = df_edit[['id', 'data', 'descricao', 'valor', 'categoria', 'tipo']]
+        
+        # Ordenação
+        df_edit = df_edit.sort_values(by='data', ascending=False)
 
         try:
             mudancas = st.data_editor(
                 df_edit,
                 column_config={
                     "id": None,
-                    "valor": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                    "valor": st.column_config.NumberColumn("Valor", format="R$ %.2f", step=0.1),
                     "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
                     "tipo": st.column_config.SelectboxColumn("Tipo", options=["Receita", "Despesa"]),
-                    "categoria": st.column_config.SelectboxColumn("Cat", options=["Alimentação", "Transporte", "Casa", "Lazer", "Outros"])
+                    "categoria": st.column_config.SelectboxColumn("Categ.", options=["Alimentação", "Transporte", "Casa", "Lazer", "Outros"])
                 },
                 hide_index=True,
                 use_container_width=True,
                 num_rows="dynamic",
-                key="editor_main"
+                key="editor_extrato_v6"
             )
 
-            if st.button("Salvar Alterações"):
-                with st.spinner("Salvando..."):
-                    # Processa Updates
+            if st.button("Salvar Edições"):
+                with st.spinner("Sincronizando..."):
                     ids_orig = df_edit['id'].tolist()
                     
+                    # Updates e Inserts
                     for i, row in mudancas.iterrows():
                         d = row.to_dict()
-                        # Converte de volta para string YYYY-MM-DD para o Supabase
+                        
+                        # Converte data object de volta para string YYYY-MM-DD para o Supabase
                         if isinstance(d['data'], (date, datetime)):
                             d['data'] = d['data'].strftime('%Y-%m-%d')
                             
-                        if pd.isna(d['id']): 
-                            # Lógica para insert via tabela (simplificada: ignorar ou tratar depois)
-                            pass
+                        if pd.isna(d['id']):
+                            # Lógica simples: se não tem ID, ignora ou implemente insert aqui se quiser
+                            pass 
                         else:
                             executar_sql('update', d, user['id'])
                     
-                    # Processa Deletes
+                    # Deletes
                     ids_new = mudancas['id'].dropna().tolist()
-                    deleted = set(ids_orig) - set(ids_new)
-                    for idx in deleted:
-                        executar_sql('delete', {'id': idx}, user['id'])
+                    deletar = set(ids_orig) - set(ids_new)
+                    for id_del in deletar:
+                        executar_sql('delete', {'id': id_del}, user['id'])
                         
-                    st.toast("Salvo!")
+                    st.toast("Atualizado!")
                     time.sleep(1)
                     st.rerun()
                     
         except Exception as e:
-            st.error(f"Erro ao renderizar tabela: {e}")
-            st.write(df_edit.head()) # Mostra dados brutos para debug
+            st.error("Erro ao carregar tabela. Verifique se há datas inválidas no banco.")
+            st.write(e) # Mostra o erro real se ainda acontecer
     else:
-        st.info("Sem dados.")
+        st.info("Sem lançamentos.")
 
 # =======================================================
 # 3. ANÁLISE
 # =======================================================
 elif nav == "Análise":
     if not df_total.empty:
-        df_atual = df_total.copy()
-        # Filtro simples
-        gastos = df_atual[df_atual['tipo'] != 'Receita']
+        df_g = df_total.copy()
+        # Garante data aqui também
+        df_g['data_dt'] = pd.to_datetime(df_g['data'], errors='coerce')
+        df_mes = df_g[df_g['data_dt'].dt.month == date.today().month]
+        
+        gastos = df_mes[df_mes['tipo'] != 'Receita']
         if not gastos.empty:
             fig = px.pie(gastos, values='valor', names='categoria', hole=0.5)
             st.plotly_chart(fig, use_container_width=True)
-
+            
+            total = gastos['valor'].sum()
+            st.metric("Total Gasto (Mês)", f"R$ {fmt_real(total)}")
+        else:
+            st.info("Sem gastos este mês.")
