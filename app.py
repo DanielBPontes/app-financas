@@ -88,7 +88,6 @@ def carregar_dados_generico(tabela, user_id):
     if tabela == 'goals':
         colunas_padrao = ['id', 'descricao', 'valor_alvo', 'valor_atual', 'data_limite', 'user_id']
     elif tabela == 'recurrent_expenses':
-        # Nova estrutura: valor_parcela, total, restantes, flag infinito
         colunas_padrao = ['id', 'descricao', 'valor_parcela', 'valor_total', 'parcelas_restantes', 'eh_infinito', 'dia_vencimento', 'user_id']
     else:
         colunas_padrao = ['id', 'descricao', 'valor', 'user_id', 'created_at']
@@ -97,17 +96,33 @@ def carregar_dados_generico(tabela, user_id):
         res = supabase.table(tabela).select("*").eq("user_id", user_id).execute()
         df = pd.DataFrame(res.data)
         
+        # Se estiver vazio, cria o DataFrame com as colunas corretas
         if df.empty: 
-            return pd.DataFrame(columns=colunas_padrao)
+            df = pd.DataFrame(columns=colunas_padrao)
         
-        # Garante que todas as colunas existam no DF mesmo que venham nulas do banco
+        # Garante que todas as colunas existam
         for col in colunas_padrao:
             if col not in df.columns:
                 df[col] = None
-                
+
+        # --- CORREÇÃO DE TIPAGEM (O SEGREDO DO FIX) ---
+        # O Streamlit data_editor exige tipos certos para funcionar
+        
+        if tabela == 'goals':
+            df['valor_alvo'] = pd.to_numeric(df['valor_alvo'], errors='coerce')
+            df['valor_atual'] = pd.to_numeric(df['valor_atual'], errors='coerce')
+            df['data_limite'] = pd.to_datetime(df['data_limite'], errors='coerce') # Importante para o DateColumn
+
+        elif tabela == 'recurrent_expenses':
+            df['valor_parcela'] = pd.to_numeric(df['valor_parcela'], errors='coerce')
+            df['valor_total'] = pd.to_numeric(df['valor_total'], errors='coerce')
+            df['parcelas_restantes'] = pd.to_numeric(df['parcelas_restantes'], errors='coerce').fillna(0).astype(int)
+            df['dia_vencimento'] = pd.to_numeric(df['dia_vencimento'], errors='coerce')
+            df['eh_infinito'] = df['eh_infinito'].astype(bool)
+
         return df
     except Exception as e: 
-        # st.error(f"Erro ao carregar {tabela}: {e}") # Debug se necessário
+        # Em caso de erro grave, retorna vazio para não quebrar a tela
         return pd.DataFrame(columns=colunas_padrao)
 
 def carregar_transacoes(user_id, limite=None):
@@ -443,3 +458,4 @@ elif selected_nav == "⚙️ Ajustes":
     if st.button("Sair da Conta", type="secondary"):
         st.session_state.clear()
         st.rerun()
+
