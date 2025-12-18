@@ -147,7 +147,7 @@ def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
     """
 
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         if tipo_entrada == "audio":
             # Salva audio temporariamente para upload
@@ -349,8 +349,14 @@ elif selected_nav == "💳 Extrato":
         st.caption("Edite valores diretamente na tabela abaixo.")
 
         # --- FEATURE: EDITOR DE DADOS (DATA EDITOR) ---
-        # Prepara DF para edição (esconde colunas técnicas)
-        df_editavel = df_mes[['id', 'data', 'descricao', 'valor', 'categoria', 'tipo']].sort_values(by='data', ascending=False)
+        # [CORREÇÃO APLICADA AQUI]
+        # Garantindo que a coluna 'data' seja do tipo datetime (não string)
+        # para evitar o erro StreamlitAPIException
+        df_editavel = df_mes.copy()
+        df_editavel['data'] = pd.to_datetime(df_editavel['data'])
+        
+        # Selecionando e ordenando colunas
+        df_editavel = df_editavel[['id', 'data', 'descricao', 'valor', 'categoria', 'tipo']].sort_values(by='data', ascending=False)
 
         mudancas = st.data_editor(
             df_editavel,
@@ -370,22 +376,22 @@ elif selected_nav == "💳 Extrato":
         # Botão de Salvar Alterações
         if st.button("💾 Salvar Alterações na Tabela", type="primary"):
             with st.spinner("Sincronizando..."):
-                # Detectar Updates (Linhas editadas)
-                # O Streamlit não retorna diff fácil, então iteramos (método simples para poucos dados)
                 ids_originais = df_mes['id'].tolist()
                 
                 # 1. Updates e Inserts
                 for index, row in mudancas.iterrows():
                     dado = row.to_dict()
-                    if pd.isna(dado['id']): # É novo (Insert)
-                         # Tratamento para insert via tabela é complexo pois falta ID. 
-                         # Simplificação: User usa tabela só para editar. Novos via Chat.
-                         pass 
+                    
+                    # [CORREÇÃO] Converter Data (objeto) de volta para String (YYYY-MM-DD) para o Supabase
+                    if isinstance(dado['data'], (pd.Timestamp, date, datetime)):
+                        dado['data'] = dado['data'].strftime('%Y-%m-%d')
+
+                    if pd.isna(dado['id']): 
+                         pass # Inserts via tabela não tratados nesta versão simples
                     else:
-                        # Update
                         executar_sql('update', dado, user['id'])
                 
-                # 2. Deletes (Linhas removidas no editor)
+                # 2. Deletes
                 ids_novos = mudancas['id'].dropna().tolist()
                 ids_removidos = set(ids_originais) - set(ids_novos)
                 
@@ -429,4 +435,3 @@ elif selected_nav == "📈 Análise":
                 st.progress(pct)
         else:
             st.info("Sem gastos este mês para analisar.")
-
