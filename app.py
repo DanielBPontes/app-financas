@@ -195,7 +195,7 @@ def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
     2. Se for análise ou dúvida, responda como um consultor financeiro breve. Retorne: {{ "acao": "chat", "msg_ia": "Sua resposta aqui" }}
     """
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         # Configuração para resposta JSON
         response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
         return json.loads(response.text)
@@ -216,7 +216,7 @@ def analisar_gastos_ia(df_mes):
     Use emojis. Máximo 3 linhas.
     """
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         res = model.generate_content(prompt)
         return res.text
     except: return "Não consegui analisar agora."
@@ -590,3 +590,4 @@ st.markdown("<br><hr>", unsafe_allow_html=True)
 if st.button("Sair da Conta", type="secondary"):
     st.session_state.clear()
     st.rerun()
+
