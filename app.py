@@ -5,78 +5,53 @@ from supabase import create_client, Client
 from datetime import datetime, date
 import time
 import json
+import tempfile
+import pathlib
 import google.generativeai as genai
 
 # --- 1. Configuração Mobile-First ---
 st.set_page_config(page_title="AppFinanças", page_icon="💳", layout="wide", initial_sidebar_state="collapsed")
 
-# --- 2. CSS "App Nativo" (A Mágica acontece aqui) ---
+# --- 2. CSS "App Nativo" Otimizado ---
 st.markdown("""
 <style>
-    /* RESET GERAL */
-    .stAppHeader {display:none !important;} /* Remove barra vermelha do Streamlit */
-    .block-container {padding-top: 1rem !important; padding-bottom: 5rem !important;} /* Ajusta espaçamento */
+    /* RESET E ESPAÇAMENTO */
+    .stAppHeader {display:none !important;} 
+    .block-container {padding-top: 1rem !important; padding-bottom: 6rem !important;} 
     
-    /* ESTILO DE NAVEGAÇÃO (SEGMENTED CONTROL - iOS Style) */
+    /* MENU DE NAVEGAÇÃO ESTILO iOS */
     div[role="radiogroup"] {
-        flex-direction: row;
-        justify-content: center;
-        background-color: #1E1E1E;
-        padding: 5px;
-        border-radius: 12px;
-        margin-bottom: 20px;
+        flex-direction: row; justify-content: center; background-color: #1E1E1E;
+        padding: 5px; border-radius: 12px; margin-bottom: 20px;
     }
     div[role="radiogroup"] label {
-        background-color: transparent;
-        border: none;
-        padding: 10px 20px;
-        border-radius: 8px;
-        transition: 0.3s;
-        text-align: center;
-        flex-grow: 1;
-        margin: 0 2px;
-        cursor: pointer;
+        background: transparent; border: none; padding: 10px 15px; border-radius: 8px;
+        text-align: center; flex-grow: 1; cursor: pointer; color: #888;
     }
-    /* Item Selecionado */
     div[role="radiogroup"] label[data-checked="true"] {
-        background-color: #00CC96 !important; /* Cor de Destaque */
-        color: black !important;
-        font-weight: bold;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-    }
-    /* Esconde as bolinhas do Radio Button */
-    div[role="radiogroup"] div[data-testid="stMarkdownContainer"] p {
-        font-size: 14px; /* Tamanho texto menu */
+        background-color: #00CC96 !important; color: #000 !important;
+        font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.2);
     }
     
-    /* CARDS DE TRANSAÇÃO (Estilo Nubank) */
-    .app-card {
-        background-color: #262730;
-        border-radius: 16px;
-        padding: 16px;
-        margin-bottom: 12px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        border: 1px solid #333;
+    /* ESTILIZAÇÃO DO CHAT */
+    .chat-suggestion-btn {
+        background-color: #262730; border: 1px solid #444; color: #FFF;
+        border-radius: 20px; padding: 5px 15px; font-size: 12px; margin-right: 5px;
+        cursor: pointer; display: inline-block;
     }
-    .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
-    .card-title { font-weight: 700; font-size: 16px; color: #FFF; }
-    .card-meta { font-size: 12px; color: #AAA; }
-    .card-amount { font-weight: 800; font-size: 16px; }
+    .chat-suggestion-btn:hover { border-color: #00CC96; color: #00CC96; }
     
-    /* Cores Semânticas */
-    .txt-green { color: #00CC96; }
-    .txt-red { color: #FF4B4B; }
+    /* BARRAS DE PROGRESSO */
+    .stProgress > div > div > div > div { background-color: #00CC96; }
     
-    /* INPUTS OTIMIZADOS PARA DEDO */
-    .stButton button {
-        width: 100%;
-        height: 50px; /* Área de toque segura */
-        border-radius: 12px;
-        font-weight: 600;
+    /* INPUTS E BOTÕES */
+    .stButton button { width: 100%; height: 50px; border-radius: 12px; font-weight: 600; }
+    
+    /* METAS */
+    .budget-card {
+        background-color: #262730; padding: 15px; border-radius: 12px;
+        border-left: 5px solid #00CC96; margin-bottom: 15px;
     }
-    
-    /* MENSAGENS CHAT */
-    .stChatMessage { background-color: #262730; border-radius: 15px; border: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -84,9 +59,7 @@ st.markdown("""
 @st.cache_resource
 def init_connection():
     try:
-        url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["key"]
-        return create_client(url, key)
+        return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
     except: return None
 
 supabase: Client = init_connection()
@@ -131,8 +104,7 @@ def executar_sql(acao, dados, user_id):
             tabela.delete().eq("id", dados['id']).eq("user_id", user_id).execute()
         return True
     except Exception as e:
-        st.error(f"Erro: {e}")
-        return False
+        st.error(f"Erro SQL: {e}"); return False
 
 def upload_comprovante(arquivo, user_id):
     try:
@@ -141,227 +113,319 @@ def upload_comprovante(arquivo, user_id):
         return supabase.storage.from_("comprovantes").get_public_url(nome)
     except: return None
 
-# Helper para formatar moeda PT-BR visualmente
 def fmt_real(valor):
+    """Formata float para Moeda BRL Visual (ex: 1.234,56)"""
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- Agente IA V2 ---
-def agente_financeiro_ia(texto_usuario, df_contexto):
+# --- Agente IA (Multimodal: Texto + Áudio) ---
+def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
     if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA Off"}
     
     contexto = "[]"
     if not df_contexto.empty:
-        contexto = df_contexto[['id', 'data', 'descricao', 'valor', 'categoria']].head(20).to_json(orient="records")
+        contexto = df_contexto[['id', 'data', 'descricao', 'valor', 'categoria']].head(15).to_json(orient="records")
 
-    # MUDANÇA AQUI: Instrução explícita sobre ponto flutuante para a IA não arredondar ou errar formato
-    prompt = f"""
-    Agente SQL Mobile. Hoje: {date.today()}.
-    Contexto Recente: {contexto}
-    User: "{texto_usuario}"
+    prompt_base = f"""
+    Atue como um Assistente Financeiro JSON. Hoje é {date.today()}.
+    Histórico Recente: {contexto}
     
-    Regra IMPORTANTE: Valores monetários devem ser float com PONTO. Ex: 13,50 vira 13.50. NÃO arredonde.
+    REGRA DE OURO - VALORES: Retorne float EXATO com ponto. Ex: "13,50" vira 13.50. "100" vira 100.00.
     
-    Retorne JSON estrito:
+    Retorne APENAS JSON neste formato:
     {{
         "acao": "insert" | "update" | "delete" | "search" | "pergunta",
-        "dados": {{ 
-            "id": int (se achar no contexto), 
-            "data": "YYYY-MM-DD", 
-            "valor": float (Exato. Ex: 13.50), 
-            "categoria": "str", 
-            "descricao": "str", 
-            "tipo": "Receita" ou "Despesa" 
+        "dados": {{
+            "id": int (apenas para update/delete),
+            "data": "YYYY-MM-DD",
+            "valor": float (Ex: 25.90),
+            "categoria": "Alimentação" | "Transporte" | "Lazer" | "Contas" | "Investimento" | "Outros",
+            "descricao": "Resumo curto (Ex: Almoço Mcdonalds)",
+            "tipo": "Receita" ou "Despesa"
         }},
-        "msg_ia": "Texto curto para mobile confirmando o valor exato"
+        "msg_ia": "Resposta curta e amigável em PT-BR"
     }}
     """
+
     try:
-        model = genai.GenerativeModel('gemini-flash-latest', generation_config={"response_mime_type": "application/json"})
-        return json.loads(model.generate_content(prompt).text)
-    except Exception as e: return {"acao": "erro", "msg": str(e)}
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        if tipo_entrada == "audio":
+            # Salva audio temporariamente para upload
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+                temp_audio.write(entrada.getvalue())
+                temp_path = temp_audio.name
+            
+            # Upload para Gemini (File API)
+            myfile = genai.upload_file(temp_path)
+            response = model.generate_content([prompt_base, "Analise este áudio e extraia a transação:", myfile], 
+                                            generation_config={"response_mime_type": "application/json"})
+            # Limpeza
+            pathlib.Path(temp_path).unlink() 
+        else:
+            # Texto Puro
+            full_prompt = f"{prompt_base}\nUsuário disse: '{entrada}'"
+            response = model.generate_content(full_prompt, generation_config={"response_mime_type": "application/json"})
+            
+        return json.loads(response.text)
+    except Exception as e: return {"acao": "erro", "msg": f"Erro IA: {str(e)}"}
 
 # =======================================================
 # LOGIN
 # =======================================================
 if 'user' not in st.session_state: st.session_state['user'] = None
 if not st.session_state['user']:
-    st.markdown("<br><br><h2 style='text-align:center'>App Finanças</h2>", unsafe_allow_html=True)
+    st.markdown("<br><h2 style='text-align:center'>🔒 Login</h2>", unsafe_allow_html=True)
     with st.form("login"):
         u = st.text_input("Usuário")
         p = st.text_input("Senha", type="password")
-        if st.form_submit_button("Entrar"):
+        if st.form_submit_button("Acessar Sistema"):
             user = login_user(u, p)
             if user: st.session_state['user'] = user; st.rerun()
-            else: st.error("Erro")
+            else: st.error("Acesso negado")
     st.stop()
 
 # =======================================================
-# NAVEGAÇÃO PRINCIPAL (SUBSTITUI SIDEBAR)
+# CONFIGURAÇÕES (SIDEBAR) & NAVEGAÇÃO
 # =======================================================
 user = st.session_state['user']
-df_total = carregar_transacoes(user['id'], 60)
+# Carrega dados
+df_total = carregar_transacoes(user['id'], 100)
 
-# Menu Superior Horizontal (Estilo App)
-selected_nav = st.radio("Navegação", ["💬 Chat", "💳 Extrato", "📈 Análise"], label_visibility="collapsed")
+with st.sidebar:
+    st.header("⚙️ Ajustes")
+    st.write(f"Olá, **{user['username']}**")
+    # Meta de Gastos (Feature Nova)
+    meta_mensal = st.number_input("Meta de Gastos (Mês)", value=3000.0, step=100.0)
+    if st.button("Sair"):
+        st.session_state.clear(); st.rerun()
 
-st.markdown("---") # Divisor sutil
+# Menu Principal
+selected_nav = st.radio("Menu", ["💬 Chat IA", "💳 Extrato", "📈 Análise"], label_visibility="collapsed")
+st.markdown("---")
 
-# --- TELA 1: CHAT ---
-if selected_nav == "💬 Chat":
-    if "messages" not in st.session_state: st.session_state.messages = []
+# =======================================================
+# TELA 1: CHAT INTELIGENTE (TEXTO & VOZ)
+# =======================================================
+if selected_nav == "💬 Chat IA":
+    if "messages" not in st.session_state: 
+        st.session_state.messages = [{"role": "assistant", "content": "Olá! Posso registrar um gasto, uma receita ou responder dúvidas."}]
     if "pending_op" not in st.session_state: st.session_state.pending_op = None
 
-    # Histórico
+    # Cabeçalho Criativo
+    hora = datetime.now().hour
+    saudacao = "Bom dia" if hora < 12 else "Boa tarde" if hora < 18 else "Boa noite"
+    st.caption(f"{saudacao}, vamos organizar as finanças?")
+
+    # Botões Rápidos (Suggestion Chips)
+    col_s1, col_s2, col_s3 = st.columns(3)
+    if col_s1.button("🍔 Almoço R$...", key="sug1"): 
+        st.session_state.messages.append({"role": "user", "content": "Gastei com Almoço..."}) # Apenas exemplo visual
+    if col_s2.button("🚗 Uber R$...", key="sug2"): pass
+    if col_s3.button("💰 Recebi Pix...", key="sug3"): pass
+
+    # Histórico de Chat
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Input
+    # --- ÁREA DE INPUT ---
+    # Se não tem operação pendente, mostra inputs
     if not st.session_state.pending_op:
-        if prompt := st.chat_input("Digite: Gastei 13,50 na padaria..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            st.rerun()
+        
+        # 1. Input de Áudio (NOVO)
+        audio_val = st.audio_input("🎙️ Falar Transação (Ex: 'Gastei 15 reais na padaria')")
+        
+        # 2. Input de Texto
+        text_val = st.chat_input("Ou digite aqui...")
 
-    # Processamento
-    if st.session_state.messages and st.session_state.messages[-1]["role"] == "user" and not st.session_state.pending_op:
-        with st.chat_message("assistant"):
-            with st.spinner("🤖"):
-                res = agente_financeiro_ia(st.session_state.messages[-1]["content"], df_total)
-                if res['acao'] in ['insert', 'update', 'delete']:
-                    st.session_state.pending_op = res
-                    st.rerun()
-                else:
-                    msg = res.get('msg_ia', res.get('msg'))
-                    st.markdown(msg)
-                    st.session_state.messages.append({"role": "assistant", "content": msg})
+        # Lógica de Processamento
+        entrada_conteudo = None
+        tipo_input = None
 
-    # Card de Confirmação (Estilo Mobile)
+        if audio_val:
+            entrada_conteudo = audio_val
+            tipo_input = "audio"
+            # Hack visual para mostrar que enviou audio
+            st.session_state.messages.append({"role": "user", "content": "🎤 *Áudio enviado...*"})
+        elif text_val:
+            entrada_conteudo = text_val
+            tipo_input = "texto"
+            st.session_state.messages.append({"role": "user", "content": text_val})
+
+        # Se houve input, chama a IA
+        if entrada_conteudo:
+            with st.chat_message("assistant"):
+                with st.spinner("🧠 Processando..."):
+                    res = agente_financeiro_ia(entrada_conteudo, df_total, tipo_input)
+                    
+                    if res['acao'] in ['insert', 'update', 'delete']:
+                        st.session_state.pending_op = res
+                        st.rerun()
+                    else:
+                        msg = res.get('msg_ia', "Não entendi.")
+                        st.markdown(msg)
+                        st.session_state.messages.append({"role": "assistant", "content": msg})
+                        # Limpa áudio forçando rerun se necessário, ou pelo fluxo natural
+
+    # --- CONFIRMAÇÃO DE AÇÃO ---
     if st.session_state.pending_op:
         op = st.session_state.pending_op
         d = op['dados']
-        tipo = op['acao'].upper()
-        
-        # MUDANÇA AQUI: Formatação visual no card de confirmação
-        valor_formatado = fmt_real(d.get('valor', 0))
+        acao = op['acao'].upper()
         
         with st.container():
-            st.info(f"CONFIRMAR {tipo}?")
-            # Preview Card
+            st.warning(f"⚠️ CONFIRMAR {acao}?")
+            
+            # Card Preview
+            val_fmt = fmt_real(d.get('valor', 0))
             st.markdown(f"""
-            <div class="app-card">
-                <div class="card-title">{d.get('descricao')}</div>
-                <div class="card-amount">R$ {valor_formatado}</div>
+            <div class="app-card" style="border-left: 5px solid {'#00CC96' if d.get('tipo')=='Receita' else '#FF4B4B'};">
+                <div class="card-title">{d.get('descricao', 'Sem descrição')}</div>
+                <div class="card-amount">R$ {val_fmt}</div>
                 <div class="card-meta">{d.get('categoria')} • {d.get('data')}</div>
             </div>
             """, unsafe_allow_html=True)
+
+            col_conf1, col_conf2 = st.columns(2)
             
-            anexo = None
-            if tipo == 'INSERT':
-                anexo = st.file_uploader("📸 Foto (Opcional)", type=['jpg', 'pdf'])
-            
-            c1, c2 = st.columns(2)
-            if c1.button("✅ Confirmar", type="primary"):
-                url = None
-                if anexo: url = upload_comprovante(anexo, user['id'])
-                
-                final_data = d.copy(); final_data['user_id'] = user['id']
-                if url: final_data['comprovante_url'] = url
+            if col_conf1.button("✅ Confirmar", type="primary", use_container_width=True):
+                # Prepara dados
+                final_data = d.copy()
+                final_data['user_id'] = user['id']
                 
                 if executar_sql(op['acao'], final_data, user['id']):
-                    st.toast("Feito!", icon="✅")
-                    st.session_state.messages.append({"role": "assistant", "content": "✅ Operação realizada."})
-                else:
-                    st.error("Erro SQL")
+                    st.toast("Sucesso!", icon="🎉")
+                    st.session_state.messages.append({"role": "assistant", "content": f"✅ {acao} realizado com sucesso."})
                 
                 st.session_state.pending_op = None
                 time.sleep(1)
                 st.rerun()
                 
-            if c2.button("❌ Cancelar"):
+            if col_conf2.button("❌ Cancelar", use_container_width=True):
                 st.session_state.pending_op = None
                 st.rerun()
 
-# --- TELA 2: EXTRATO (DASHBOARD) ---
+# =======================================================
+# TELA 2: EXTRATO INTELIGENTE (EDITOR + METAS)
+# =======================================================
 elif selected_nav == "💳 Extrato":
-    # Filtro Compacto
-    with st.expander("📅 Filtrar Data", expanded=False):
-        c1, c2 = st.columns(2)
-        mes = c1.selectbox("Mês", range(1,13), index=date.today().month-1)
-        ano = c2.number_input("Ano", 2024, 2030, date.today().year)
+    
+    # Filtros
+    c_f1, c_f2 = st.columns([2, 1])
+    filtro_mes = c_f1.selectbox("Mês", range(1,13), index=date.today().month-1)
+    filtro_ano = c_f2.number_input("Ano", 2024, 2030, date.today().year)
 
-    # Dados do Mês
     if not df_total.empty:
-        df_mes = df_total[(df_total['data_dt'].dt.month == mes) & (df_total['data_dt'].dt.year == ano)]
+        # Filtrar dados locais
+        mask = (df_total['data_dt'].dt.month == filtro_mes) & (df_total['data_dt'].dt.year == filtro_ano)
+        df_mes = df_total[mask].copy()
         
-        rec = df_mes[df_mes['tipo'] == 'Receita']['valor'].sum()
-        desp = df_mes[df_mes['tipo'] != 'Receita']['valor'].sum()
-        saldo = rec - desp
+        # Cálculos
+        total_rec = df_mes[df_mes['tipo'] == 'Receita']['valor'].sum()
+        total_desp = df_mes[df_mes['tipo'] != 'Receita']['valor'].sum()
+        saldo = total_rec - total_desp
         
-        # MUDANÇA AQUI: Métricas com 2 casas decimais e vírgula
-        col_a, col_b = st.columns(2)
-        col_a.metric("Entrou", f"R$ {fmt_real(rec)}")
-        col_b.metric("Saiu", f"R$ {fmt_real(desp)}", delta_color="inverse")
-        st.caption(f"Saldo Líquido: R$ {fmt_real(saldo)}")
-        
-        st.markdown("### Histórico")
-        
-        if df_mes.empty: st.info("Sem dados.")
-        
-        # Loop de Cards Otimizados
-        for _, row in df_mes.iterrows():
-            is_receita = row['tipo'] == 'Receita'
-            cor_val = "txt-green" if is_receita else "txt-red"
-            sinal = "+" if is_receita else "-"
-            
-            # MUDANÇA AQUI: Formatando valor individual da transação
-            valor_visual = fmt_real(row['valor'])
-            
+        # --- FEATURE: PROGRESSO DA META ---
+        if meta_mensal > 0:
+            perc_gasto = min(total_desp / meta_mensal, 1.0)
+            cor_barra = "red" if perc_gasto > 0.9 else "green"
             st.markdown(f"""
-            <div class="app-card">
-                <div class="card-header">
-                    <span class="card-title">{row['descricao']}</span>
-                    <span class="card-amount {cor_val}">{sinal} {valor_visual}</span>
-                </div>
-                <div class="card-header">
-                    <span class="card-meta">{row['categoria']} • {row['data_dt'].strftime('%d/%m')}</span>
-                    <span class="card-meta">#{row['id']}</span>
-                </div>
+            <div class="budget-card">
+                <span style="font-size:14px; color:#AAA;">Orçamento Mensal</span><br>
+                <span style="font-size:20px; font-weight:bold;">R$ {fmt_real(total_desp)}</span> 
+                <span style="font-size:14px;"> / {fmt_real(meta_mensal)}</span>
             </div>
             """, unsafe_allow_html=True)
-            
-            c_del, c_view = st.columns([1, 4])
-            if c_del.button("🗑️", key=f"del_{row['id']}"):
-                executar_sql('delete', {'id': row['id']}, user['id'])
-                st.toast("Apagado")
-                time.sleep(0.5)
-                st.rerun()
-                
-            if row.get('comprovante_url'):
-                c_view.link_button("📎 Ver Anexo", row['comprovante_url'])
+            st.progress(perc_gasto)
+            if perc_gasto >= 1.0: st.error("🚨 Orçamento Estourado!")
 
-# --- TELA 3: ANÁLISE ---
+        # Resumo Financeiro
+        c_r1, c_r2 = st.columns(2)
+        c_r1.metric("Entradas", f"R$ {fmt_real(total_rec)}")
+        c_r2.metric("Saídas", f"R$ {fmt_real(total_desp)}", delta_color="inverse")
+
+        st.divider()
+        st.subheader("📝 Editar Lançamentos")
+        st.caption("Edite valores diretamente na tabela abaixo.")
+
+        # --- FEATURE: EDITOR DE DADOS (DATA EDITOR) ---
+        # Prepara DF para edição (esconde colunas técnicas)
+        df_editavel = df_mes[['id', 'data', 'descricao', 'valor', 'categoria', 'tipo']].sort_values(by='data', ascending=False)
+
+        mudancas = st.data_editor(
+            df_editavel,
+            column_config={
+                "id": None, # Oculto
+                "valor": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f", min_value=0.0),
+                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                "tipo": st.column_config.SelectboxColumn("Tipo", options=["Receita", "Despesa"], required=True),
+                "categoria": st.column_config.SelectboxColumn("Categoria", options=["Alimentação", "Transporte", "Casa", "Lazer", "Investimento", "Outros"])
+            },
+            hide_index=True,
+            use_container_width=True,
+            num_rows="dynamic", # Permite adicionar linhas vazias
+            key="editor_grid"
+        )
+
+        # Botão de Salvar Alterações
+        if st.button("💾 Salvar Alterações na Tabela", type="primary"):
+            with st.spinner("Sincronizando..."):
+                # Detectar Updates (Linhas editadas)
+                # O Streamlit não retorna diff fácil, então iteramos (método simples para poucos dados)
+                ids_originais = df_mes['id'].tolist()
+                
+                # 1. Updates e Inserts
+                for index, row in mudancas.iterrows():
+                    dado = row.to_dict()
+                    if pd.isna(dado['id']): # É novo (Insert)
+                         # Tratamento para insert via tabela é complexo pois falta ID. 
+                         # Simplificação: User usa tabela só para editar. Novos via Chat.
+                         pass 
+                    else:
+                        # Update
+                        executar_sql('update', dado, user['id'])
+                
+                # 2. Deletes (Linhas removidas no editor)
+                ids_novos = mudancas['id'].dropna().tolist()
+                ids_removidos = set(ids_originais) - set(ids_novos)
+                
+                for id_del in ids_removidos:
+                    executar_sql('delete', {'id': id_del}, user['id'])
+                
+                st.toast("Dados atualizados!", icon="✅")
+                time.sleep(1)
+                st.rerun()
+
+    else:
+        st.info("Nenhuma movimentação encontrada.")
+
+# =======================================================
+# TELA 3: ANÁLISE GRÁFICA
+# =======================================================
 elif selected_nav == "📈 Análise":
-    st.subheader("Para onde foi o dinheiro?")
+    st.subheader("Raio-X Financeiro")
+    
     if not df_total.empty:
-        df_mes = df_total[df_total['data_dt'].dt.month == date.today().month]
-        gastos = df_mes[df_mes['tipo'] != 'Receita']
+        # Filtra mês atual automaticamente
+        df_atual = df_total[df_total['data_dt'].dt.month == date.today().month]
+        gastos = df_atual[df_atual['tipo'] != 'Receita']
         
         if not gastos.empty:
-            fig = px.pie(gastos, values='valor', names='categoria', hole=0.7, color_discrete_sequence=px.colors.qualitative.Pastel)
-            fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5))
+            # Gráfico de Rosca
+            fig = px.pie(gastos, values='valor', names='categoria', hole=0.6, 
+                         color_discrete_sequence=px.colors.qualitative.Set3)
+            fig.update_traces(textinfo='percent+label')
+            fig.update_layout(showlegend=False, margin=dict(t=0, b=0, l=0, r=0), height=300)
             st.plotly_chart(fig, use_container_width=True)
             
-            # Lista Top Gastos
-            top_cats = gastos.groupby('categoria')['valor'].sum().sort_values(ascending=False).head(3)
-            st.markdown("**Maiores Gastos:**")
+            # Top Gastos (Barra de Progresso)
+            st.markdown("##### 🏆 Maiores Gastos")
+            top_cats = gastos.groupby('categoria')['valor'].sum().sort_values(ascending=False)
+            total_gasto_mes = gastos['valor'].sum()
+            
             for cat, val in top_cats.items():
-                # MUDANÇA AQUI: Barra de progresso com valor exato formatado
-                st.progress(int(val/gastos['valor'].sum()*100), text=f"{cat}: R$ {fmt_real(val)}")
-
-# --- Rodapé Fixo ---
-with st.sidebar:
-    st.title("Configurações")
-    st.write(f"Logado como: {user['username']}")
-    if st.button("Sair da Conta"):
-        st.session_state.clear()
-        st.rerun()
+                pct = int((val / total_gasto_mes) * 100)
+                st.markdown(f"**{cat}** — R$ {fmt_real(val)}")
+                st.progress(pct)
+        else:
+            st.info("Sem gastos este mês para analisar.")
