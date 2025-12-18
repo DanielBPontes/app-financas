@@ -5,21 +5,19 @@ from supabase import create_client, Client
 from datetime import datetime, date
 import time
 import json
-import tempfile
-import pathlib
 import google.generativeai as genai
 
 # --- 1. Configuração Mobile-First ---
 st.set_page_config(page_title="AppFinanças", page_icon="💳", layout="wide", initial_sidebar_state="collapsed")
 
-# --- 2. CSS "App Nativo" Otimizado ---
+# --- 2. CSS Otimizado e Discreto ---
 st.markdown("""
 <style>
-    /* RESET E ESPAÇAMENTO */
+    /* RESET */
     .stAppHeader {display:none !important;} 
     .block-container {padding-top: 1rem !important; padding-bottom: 6rem !important;} 
     
-    /* MENU DE NAVEGAÇÃO ESTILO iOS */
+    /* MENU NAVEGAÇÃO */
     div[role="radiogroup"] {
         flex-direction: row; justify-content: center; background-color: #1E1E1E;
         padding: 5px; border-radius: 12px; margin-bottom: 20px;
@@ -33,24 +31,20 @@ st.markdown("""
         font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.2);
     }
     
-    /* ESTILIZAÇÃO DO CHAT */
-    .chat-suggestion-btn {
-        background-color: #262730; border: 1px solid #444; color: #FFF;
-        border-radius: 20px; padding: 5px 15px; font-size: 12px; margin-right: 5px;
-        cursor: pointer; display: inline-block;
+    /* BOTÕES DE SUGESTÃO */
+    .stButton button { width: 100%; border-radius: 12px; font-weight: 600; }
+    
+    /* MICROFONE MAIS DISCRETO */
+    /* Tenta reduzir o padding do audio input para ocupar menos espaço */
+    div[data-testid="stAudioInput"] {
+        margin-top: -10px;
+        margin-bottom: 10px;
     }
-    .chat-suggestion-btn:hover { border-color: #00CC96; color: #00CC96; }
     
-    /* BARRAS DE PROGRESSO */
-    .stProgress > div > div > div > div { background-color: #00CC96; }
-    
-    /* INPUTS E BOTÕES */
-    .stButton button { width: 100%; height: 50px; border-radius: 12px; font-weight: 600; }
-    
-    /* METAS */
-    .budget-card {
+    /* ALERTAS E CARDS */
+    .app-card {
         background-color: #262730; padding: 15px; border-radius: 12px;
-        border-left: 5px solid #00CC96; margin-bottom: 15px;
+        border: 1px solid #333; margin-bottom: 10px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -114,10 +108,9 @@ def upload_comprovante(arquivo, user_id):
     except: return None
 
 def fmt_real(valor):
-    """Formata float para Moeda BRL Visual (ex: 1.234,56)"""
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- Agente IA (Multimodal: Texto + Áudio) ---
+# --- Agente IA (CORRIGIDO: Envio de Bytes Diretos) ---
 def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
     if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA Off"}
     
@@ -127,22 +120,20 @@ def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
 
     prompt_base = f"""
     Atue como um Assistente Financeiro JSON. Hoje é {date.today()}.
-    Histórico Recente: {contexto}
+    Histórico: {contexto}
     
-    REGRA DE OURO - VALORES: Retorne float EXATO com ponto. Ex: "13,50" vira 13.50. "100" vira 100.00.
+    REGRA: Valores float com PONTO (Ex: 13.50). 
+    Se for ÁUDIO: Transcreva o valor e o item com precisão.
     
-    Retorne APENAS JSON neste formato:
+    Retorne JSON:
     {{
         "acao": "insert" | "update" | "delete" | "search" | "pergunta",
         "dados": {{
-            "id": int (apenas para update/delete),
-            "data": "YYYY-MM-DD",
-            "valor": float (Ex: 25.90),
-            "categoria": "Alimentação" | "Transporte" | "Lazer" | "Contas" | "Investimento" | "Outros",
-            "descricao": "Resumo curto (Ex: Almoço Mcdonalds)",
-            "tipo": "Receita" ou "Despesa"
+            "id": int (p/ update/del), "data": "YYYY-MM-DD", "valor": float,
+            "categoria": "Alimentação"|"Transporte"|"Lazer"|"Casa"|"Outros",
+            "descricao": "str", "tipo": "Receita"|"Despesa"
         }},
-        "msg_ia": "Resposta curta e amigável em PT-BR"
+        "msg_ia": "Resposta curta"
     }}
     """
 
@@ -150,20 +141,14 @@ def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         if tipo_entrada == "audio":
-            # Salva audio temporariamente para upload
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
-                temp_audio.write(entrada.getvalue())
-                temp_path = temp_audio.name
-            
-            # Upload para Gemini (File API)
-            myfile = genai.upload_file(temp_path)
-            response = model.generate_content([prompt_base, "Analise este áudio e extraia a transação:", myfile], 
-                                            generation_config={"response_mime_type": "application/json"})
-            # Limpeza
-            pathlib.Path(temp_path).unlink() 
+            # CORREÇÃO: Envia bytes diretos (inline data) em vez de arquivo
+            audio_bytes = entrada.getvalue()
+            response = model.generate_content(
+                [prompt_base, {"mime_type": "audio/wav", "data": audio_bytes}, "Extraia a transação deste áudio."],
+                generation_config={"response_mime_type": "application/json"}
+            )
         else:
-            # Texto Puro
-            full_prompt = f"{prompt_base}\nUsuário disse: '{entrada}'"
+            full_prompt = f"{prompt_base}\nUser: '{entrada}'"
             response = model.generate_content(full_prompt, generation_config={"response_mime_type": "application/json"})
             
         return json.loads(response.text)
@@ -178,85 +163,96 @@ if not st.session_state['user']:
     with st.form("login"):
         u = st.text_input("Usuário")
         p = st.text_input("Senha", type="password")
-        if st.form_submit_button("Acessar Sistema"):
+        if st.form_submit_button("Entrar"):
             user = login_user(u, p)
             if user: st.session_state['user'] = user; st.rerun()
             else: st.error("Acesso negado")
     st.stop()
 
 # =======================================================
-# CONFIGURAÇÕES (SIDEBAR) & NAVEGAÇÃO
+# LÓGICA & NAVEGAÇÃO
 # =======================================================
 user = st.session_state['user']
-# Carrega dados
 df_total = carregar_transacoes(user['id'], 100)
 
 with st.sidebar:
-    st.header("⚙️ Ajustes")
-    st.write(f"Olá, **{user['username']}**")
-    # Meta de Gastos (Feature Nova)
-    meta_mensal = st.number_input("Meta de Gastos (Mês)", value=3000.0, step=100.0)
-    if st.button("Sair"):
-        st.session_state.clear(); st.rerun()
+    st.write(f"Logado: {user['username']}")
+    meta_mensal = st.number_input("Meta Mensal", value=3000.0)
+    if st.button("Sair"): st.session_state.clear(); st.rerun()
 
-# Menu Principal
-selected_nav = st.radio("Menu", ["💬 Chat IA", "💳 Extrato", "📈 Análise"], label_visibility="collapsed")
+selected_nav = st.radio("Menu", ["💬 Chat", "💳 Extrato", "📈 Análise"], label_visibility="collapsed")
 st.markdown("---")
 
 # =======================================================
-# TELA 1: CHAT INTELIGENTE (TEXTO & VOZ)
+# TELA 1: CHAT IA (COM CORREÇÃO DE ÁUDIO LOOP)
 # =======================================================
-if selected_nav == "💬 Chat IA":
-    if "messages" not in st.session_state: 
-        st.session_state.messages = [{"role": "assistant", "content": "Olá! Posso registrar um gasto, uma receita ou responder dúvidas."}]
+if selected_nav == "💬 Chat":
+    # Estado inicial
+    if "messages" not in st.session_state: st.session_state.messages = []
     if "pending_op" not in st.session_state: st.session_state.pending_op = None
+    # Controle de Áudio para evitar Loop
+    if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
 
-    # Cabeçalho Criativo
-    hora = datetime.now().hour
-    saudacao = "Bom dia" if hora < 12 else "Boa tarde" if hora < 18 else "Boa noite"
-    st.caption(f"{saudacao}, vamos organizar as finanças?")
-
-    # Botões Rápidos (Suggestion Chips)
-    col_s1, col_s2, col_s3 = st.columns(3)
-    if col_s1.button("🍔 Almoço R$...", key="sug1"): 
-        st.session_state.messages.append({"role": "user", "content": "Gastei com Almoço..."}) # Apenas exemplo visual
-    if col_s2.button("🚗 Uber R$...", key="sug2"): pass
-    if col_s3.button("💰 Recebi Pix...", key="sug3"): pass
-
-    # Histórico de Chat
+    # Histórico
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
     # --- ÁREA DE INPUT ---
-    # Se não tem operação pendente, mostra inputs
     if not st.session_state.pending_op:
         
-        # 1. Input de Áudio (NOVO)
-        audio_val = st.audio_input("🎙️ Falar Transação (Ex: 'Gastei 15 reais na padaria')")
+        # 1. Sugestões Rápidas (Acionam via clique)
+        col_s1, col_s2, col_s3 = st.columns(3)
+        input_texto_simulado = None
         
-        # 2. Input de Texto
-        text_val = st.chat_input("Ou digite aqui...")
+        if col_s1.button("🍔 Almoço"): input_texto_simulado = "Gastei 30,00 com almoço"
+        if col_s2.button("🚗 Uber"): input_texto_simulado = "Gastei 15,00 Uber"
+        if col_s3.button("💰 Recebi"): input_texto_simulado = "Recebi 100,00 Pix"
 
-        # Lógica de Processamento
-        entrada_conteudo = None
-        tipo_input = None
+        # 2. Áudio Discreto (Sem label)
+        # O ID único ajuda a diferenciar gravações
+        audio_val = st.audio_input("Grave aqui", label_visibility="collapsed") 
+        
+        # 3. Chat Input Texto
+        text_val = st.chat_input("Digite ou fale...")
 
-        if audio_val:
-            entrada_conteudo = audio_val
-            tipo_input = "audio"
-            # Hack visual para mostrar que enviou audio
-            st.session_state.messages.append({"role": "user", "content": "🎤 *Áudio enviado...*"})
+        # Lógica de Decisão (Quem processar?)
+        conteudo_final = None
+        tipo_final = None
+
+        # Prioridade 1: Botões de Sugestão
+        if input_texto_simulado:
+            conteudo_final = input_texto_simulado
+            tipo_final = "texto"
+            # Importante: Se clicou no botão, ignore qualquer áudio antigo que esteja no buffer
+            st.session_state.last_audio_id = audio_val 
+
+        # Prioridade 2: Texto digitado
         elif text_val:
-            entrada_conteudo = text_val
-            tipo_input = "texto"
-            st.session_state.messages.append({"role": "user", "content": text_val})
+            conteudo_final = text_val
+            tipo_final = "texto"
+            st.session_state.last_audio_id = audio_val
 
-        # Se houve input, chama a IA
-        if entrada_conteudo:
+        # Prioridade 3: Áudio (SOMENTE se for novo)
+        elif audio_val:
+            # Compara se esse áudio já foi processado
+            if audio_val != st.session_state.last_audio_id:
+                conteudo_final = audio_val
+                tipo_final = "audio"
+                st.session_state.last_audio_id = audio_val # Marca como lido
+                st.session_state.messages.append({"role": "user", "content": "🎤 *Áudio recebido...*"})
+            else:
+                # É um áudio antigo que o Streamlit manteve na tela, ignorar.
+                pass
+
+        # Executa IA
+        if conteudo_final:
+            if tipo_final == "texto":
+                st.session_state.messages.append({"role": "user", "content": conteudo_final})
+
             with st.chat_message("assistant"):
-                with st.spinner("🧠 Processando..."):
-                    res = agente_financeiro_ia(entrada_conteudo, df_total, tipo_input)
+                with st.spinner("🤖"):
+                    res = agente_financeiro_ia(conteudo_final, df_total, tipo_final)
                     
                     if res['acao'] in ['insert', 'update', 'delete']:
                         st.session_state.pending_op = res
@@ -265,9 +261,8 @@ if selected_nav == "💬 Chat IA":
                         msg = res.get('msg_ia', "Não entendi.")
                         st.markdown(msg)
                         st.session_state.messages.append({"role": "assistant", "content": msg})
-                        # Limpa áudio forçando rerun se necessário, ou pelo fluxo natural
 
-    # --- CONFIRMAÇÃO DE AÇÃO ---
+    # --- CONFIRMAÇÃO ---
     if st.session_state.pending_op:
         op = st.session_state.pending_op
         d = op['dados']
@@ -275,8 +270,6 @@ if selected_nav == "💬 Chat IA":
         
         with st.container():
             st.warning(f"⚠️ CONFIRMAR {acao}?")
-            
-            # Card Preview
             val_fmt = fmt_real(d.get('valor', 0))
             st.markdown(f"""
             <div class="app-card" style="border-left: 5px solid {'#00CC96' if d.get('tipo')=='Receita' else '#FF4B4B'};">
@@ -285,153 +278,96 @@ if selected_nav == "💬 Chat IA":
                 <div class="card-meta">{d.get('categoria')} • {d.get('data')}</div>
             </div>
             """, unsafe_allow_html=True)
-
-            col_conf1, col_conf2 = st.columns(2)
             
-            if col_conf1.button("✅ Confirmar", type="primary", use_container_width=True):
-                # Prepara dados
-                final_data = d.copy()
-                final_data['user_id'] = user['id']
-                
-                if executar_sql(op['acao'], final_data, user['id']):
-                    st.toast("Sucesso!", icon="🎉")
-                    st.session_state.messages.append({"role": "assistant", "content": f"✅ {acao} realizado com sucesso."})
-                
+            c1, c2 = st.columns(2)
+            if c1.button("✅ Sim", type="primary"):
+                if executar_sql(op['acao'], {**d, 'user_id': user['id']}, user['id']):
+                    st.toast("Sucesso!")
+                    st.session_state.messages.append({"role": "assistant", "content": "✅ Feito!"})
                 st.session_state.pending_op = None
-                time.sleep(1)
-                st.rerun()
-                
-            if col_conf2.button("❌ Cancelar", use_container_width=True):
+                time.sleep(1); st.rerun()
+            
+            if c2.button("❌ Não"):
                 st.session_state.pending_op = None
                 st.rerun()
 
 # =======================================================
-# TELA 2: EXTRATO INTELIGENTE (EDITOR + METAS)
+# TELA 2: EXTRATO (COM FIX DE DATA)
 # =======================================================
 elif selected_nav == "💳 Extrato":
-    
-    # Filtros
-    c_f1, c_f2 = st.columns([2, 1])
-    filtro_mes = c_f1.selectbox("Mês", range(1,13), index=date.today().month-1)
-    filtro_ano = c_f2.number_input("Ano", 2024, 2030, date.today().year)
+    c1, c2 = st.columns([2,1])
+    mes = c1.selectbox("Mês", range(1,13), index=date.today().month-1)
+    ano = c2.number_input("Ano", 2024, 2030, date.today().year)
 
     if not df_total.empty:
-        # Filtrar dados locais
-        mask = (df_total['data_dt'].dt.month == filtro_mes) & (df_total['data_dt'].dt.year == filtro_ano)
+        mask = (df_total['data_dt'].dt.month == mes) & (df_total['data_dt'].dt.year == ano)
         df_mes = df_total[mask].copy()
         
-        # Cálculos
-        total_rec = df_mes[df_mes['tipo'] == 'Receita']['valor'].sum()
-        total_desp = df_mes[df_mes['tipo'] != 'Receita']['valor'].sum()
-        saldo = total_rec - total_desp
+        rec = df_mes[df_mes['tipo'] == 'Receita']['valor'].sum()
+        desp = df_mes[df_mes['tipo'] != 'Receita']['valor'].sum()
         
-        # --- FEATURE: PROGRESSO DA META ---
+        # Meta Visual
         if meta_mensal > 0:
-            perc_gasto = min(total_desp / meta_mensal, 1.0)
-            cor_barra = "red" if perc_gasto > 0.9 else "green"
-            st.markdown(f"""
-            <div class="budget-card">
-                <span style="font-size:14px; color:#AAA;">Orçamento Mensal</span><br>
-                <span style="font-size:20px; font-weight:bold;">R$ {fmt_real(total_desp)}</span> 
-                <span style="font-size:14px;"> / {fmt_real(meta_mensal)}</span>
-            </div>
-            """, unsafe_allow_html=True)
-            st.progress(perc_gasto)
-            if perc_gasto >= 1.0: st.error("🚨 Orçamento Estourado!")
+            pg = min(desp/meta_mensal, 1.0)
+            st.caption(f"Meta: {fmt_real(desp)} / {fmt_real(meta_mensal)}")
+            st.progress(pg)
 
-        # Resumo Financeiro
-        c_r1, c_r2 = st.columns(2)
-        c_r1.metric("Entradas", f"R$ {fmt_real(total_rec)}")
-        c_r2.metric("Saídas", f"R$ {fmt_real(total_desp)}", delta_color="inverse")
+        c_a, c_b = st.columns(2)
+        c_a.metric("Entrou", f"R$ {fmt_real(rec)}")
+        c_b.metric("Saiu", f"R$ {fmt_real(desp)}", delta_color="inverse")
 
         st.divider()
-        st.subheader("📝 Editar Lançamentos")
-        st.caption("Edite valores diretamente na tabela abaixo.")
-
-        # --- FEATURE: EDITOR DE DADOS (DATA EDITOR) ---
-        # [CORREÇÃO APLICADA AQUI]
-        # Garantindo que a coluna 'data' seja do tipo datetime (não string)
-        # para evitar o erro StreamlitAPIException
-        df_editavel = df_mes.copy()
-        df_editavel['data'] = pd.to_datetime(df_editavel['data'])
+        st.subheader("📝 Editar")
         
-        # Selecionando e ordenando colunas
-        df_editavel = df_editavel[['id', 'data', 'descricao', 'valor', 'categoria', 'tipo']].sort_values(by='data', ascending=False)
+        # Fix Data e Ordenação
+        df_edit = df_mes.copy()
+        df_edit['data'] = pd.to_datetime(df_edit['data'])
+        df_edit = df_edit[['id', 'data', 'descricao', 'valor', 'categoria', 'tipo']].sort_values('data', ascending=False)
 
         mudancas = st.data_editor(
-            df_editavel,
+            df_edit,
             column_config={
-                "id": None, # Oculto
-                "valor": st.column_config.NumberColumn("Valor (R$)", format="R$ %.2f", min_value=0.0),
+                "id": None,
+                "valor": st.column_config.NumberColumn("R$", format="R$ %.2f", min_value=0.0),
                 "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
                 "tipo": st.column_config.SelectboxColumn("Tipo", options=["Receita", "Despesa"], required=True),
-                "categoria": st.column_config.SelectboxColumn("Categoria", options=["Alimentação", "Transporte", "Casa", "Lazer", "Investimento", "Outros"])
+                "categoria": st.column_config.SelectboxColumn("Categ.", options=["Alimentação", "Transporte", "Casa", "Lazer", "Outros"])
             },
-            hide_index=True,
-            use_container_width=True,
-            num_rows="dynamic", # Permite adicionar linhas vazias
-            key="editor_grid"
+            hide_index=True, use_container_width=True, num_rows="dynamic", key="grid"
         )
 
-        # Botão de Salvar Alterações
-        if st.button("💾 Salvar Alterações na Tabela", type="primary"):
-            with st.spinner("Sincronizando..."):
-                ids_originais = df_mes['id'].tolist()
-                
-                # 1. Updates e Inserts
-                for index, row in mudancas.iterrows():
-                    dado = row.to_dict()
+        if st.button("💾 Salvar"):
+            with st.spinner("Salvando..."):
+                ids_orig = df_mes['id'].tolist()
+                for i, row in mudancas.iterrows():
+                    d = row.to_dict()
+                    # Fix Data String
+                    if isinstance(d['data'], (pd.Timestamp, date)): d['data'] = d['data'].strftime('%Y-%m-%d')
                     
-                    # [CORREÇÃO] Converter Data (objeto) de volta para String (YYYY-MM-DD) para o Supabase
-                    if isinstance(dado['data'], (pd.Timestamp, date, datetime)):
-                        dado['data'] = dado['data'].strftime('%Y-%m-%d')
-
-                    if pd.isna(dado['id']): 
-                         pass # Inserts via tabela não tratados nesta versão simples
-                    else:
-                        executar_sql('update', dado, user['id'])
+                    if not pd.isna(d['id']): executar_sql('update', d, user['id'])
                 
-                # 2. Deletes
+                # Delete
                 ids_novos = mudancas['id'].dropna().tolist()
-                ids_removidos = set(ids_originais) - set(ids_novos)
+                for x in set(ids_orig) - set(ids_novos): executar_sql('delete', {'id': x}, user['id'])
                 
-                for id_del in ids_removidos:
-                    executar_sql('delete', {'id': id_del}, user['id'])
-                
-                st.toast("Dados atualizados!", icon="✅")
-                time.sleep(1)
-                st.rerun()
-
-    else:
-        st.info("Nenhuma movimentação encontrada.")
+                st.toast("Atualizado!"); time.sleep(1); st.rerun()
+    else: st.info("Sem dados.")
 
 # =======================================================
-# TELA 3: ANÁLISE GRÁFICA
+# TELA 3: ANÁLISE
 # =======================================================
 elif selected_nav == "📈 Análise":
-    st.subheader("Raio-X Financeiro")
-    
+    st.subheader("Gráficos")
     if not df_total.empty:
-        # Filtra mês atual automaticamente
         df_atual = df_total[df_total['data_dt'].dt.month == date.today().month]
         gastos = df_atual[df_atual['tipo'] != 'Receita']
         
         if not gastos.empty:
-            # Gráfico de Rosca
-            fig = px.pie(gastos, values='valor', names='categoria', hole=0.6, 
-                         color_discrete_sequence=px.colors.qualitative.Set3)
-            fig.update_traces(textinfo='percent+label')
-            fig.update_layout(showlegend=False, margin=dict(t=0, b=0, l=0, r=0), height=300)
+            fig = px.pie(gastos, values='valor', names='categoria', hole=0.6)
             st.plotly_chart(fig, use_container_width=True)
             
-            # Top Gastos (Barra de Progresso)
-            st.markdown("##### 🏆 Maiores Gastos")
-            top_cats = gastos.groupby('categoria')['valor'].sum().sort_values(ascending=False)
-            total_gasto_mes = gastos['valor'].sum()
-            
-            for cat, val in top_cats.items():
-                pct = int((val / total_gasto_mes) * 100)
-                st.markdown(f"**{cat}** — R$ {fmt_real(val)}")
-                st.progress(pct)
-        else:
-            st.info("Sem gastos este mês para analisar.")
+            top = gastos.groupby('categoria')['valor'].sum().sort_values(ascending=False)
+            for c, v in top.items():
+                st.write(f"**{c}**: R$ {fmt_real(v)}")
+                st.progress(int((v/gastos['valor'].sum())*100))
+        else: st.info("Sem gastos.")
