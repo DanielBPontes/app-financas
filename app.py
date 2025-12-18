@@ -10,14 +10,14 @@ import google.generativeai as genai
 # --- 1. Configuração Mobile-First ---
 st.set_page_config(page_title="AppFinanças", page_icon="💳", layout="wide", initial_sidebar_state="collapsed")
 
-# --- 2. CSS Otimizado e Discreto ---
+# --- 2. CSS "App Nativo" Otimizado ---
 st.markdown("""
 <style>
-    /* RESET */
+    /* RESET E ESPAÇAMENTO */
     .stAppHeader {display:none !important;} 
     .block-container {padding-top: 1rem !important; padding-bottom: 6rem !important;} 
     
-    /* MENU NAVEGAÇÃO */
+    /* MENU DE NAVEGAÇÃO */
     div[role="radiogroup"] {
         flex-direction: row; justify-content: center; background-color: #1E1E1E;
         padding: 5px; border-radius: 12px; margin-bottom: 20px;
@@ -31,17 +31,14 @@ st.markdown("""
         font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.2);
     }
     
-    /* BOTÕES DE SUGESTÃO */
+    /* SUGESTÕES DE CHAT */
     .stButton button { width: 100%; border-radius: 12px; font-weight: 600; }
     
-    /* MICROFONE MAIS DISCRETO */
-    /* Tenta reduzir o padding do audio input para ocupar menos espaço */
-    div[data-testid="stAudioInput"] {
-        margin-top: -10px;
-        margin-bottom: 10px;
-    }
+    /* MICROFONE DISCRETO (Hack CSS) */
+    div[data-testid="stAudioInput"] { margin-top: -10px; margin-bottom: 10px; }
+    div[data-testid="stAudioInput"] label { display: none; } /* Esconde texto 'Label' */
     
-    /* ALERTAS E CARDS */
+    /* CARDS */
     .app-card {
         background-color: #262730; padding: 15px; border-radius: 12px;
         border: 1px solid #333; margin-bottom: 10px;
@@ -65,7 +62,7 @@ try:
     else: IA_AVAILABLE = False
 except: IA_AVAILABLE = False
 
-# --- Backend Functions ---
+# --- Funções Auxiliares ---
 def login_user(username, password):
     try:
         response = supabase.table("users").select("*").eq("username", username).eq("password", password).execute()
@@ -79,7 +76,8 @@ def carregar_transacoes(user_id, limite=None):
         res = query.execute()
         df = pd.DataFrame(res.data)
         if not df.empty:
-            df['data_dt'] = pd.to_datetime(df['data'])
+            # Converte para datetime para manipulação, mas mantém string para visualização simples se precisar
+            df['data_dt'] = pd.to_datetime(df['data']) 
             df['valor'] = pd.to_numeric(df['valor'])
         return df
     except: return pd.DataFrame()
@@ -110,30 +108,31 @@ def upload_comprovante(arquivo, user_id):
 def fmt_real(valor):
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- Agente IA (CORRIGIDO: Envio de Bytes Diretos) ---
+# --- Agente IA (Robusto) ---
 def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
-    if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA Off"}
+    if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA não configurada"}
     
     contexto = "[]"
     if not df_contexto.empty:
-        contexto = df_contexto[['id', 'data', 'descricao', 'valor', 'categoria']].head(15).to_json(orient="records")
+        contexto = df_contexto[['id', 'data', 'descricao', 'valor', 'categoria']].head(10).to_json(orient="records")
 
     prompt_base = f"""
-    Atue como um Assistente Financeiro JSON. Hoje é {date.today()}.
+    Atue como um Assistente Financeiro. Hoje: {date.today()}.
     Histórico: {contexto}
     
-    REGRA: Valores float com PONTO (Ex: 13.50). 
-    Se for ÁUDIO: Transcreva o valor e o item com precisão.
+    SEU OBJETIVO: Extrair transações financeiras.
+    Regra 1: Valores float com PONTO (Ex: 13.50).
+    Regra 2: Se não entender o áudio ou texto, retorne acao: "erro".
     
-    Retorne JSON:
+    Retorne JSON ESTRITO:
     {{
-        "acao": "insert" | "update" | "delete" | "search" | "pergunta",
+        "acao": "insert" | "update" | "delete" | "pergunta" | "erro",
         "dados": {{
-            "id": int (p/ update/del), "data": "YYYY-MM-DD", "valor": float,
-            "categoria": "Alimentação"|"Transporte"|"Lazer"|"Casa"|"Outros",
-            "descricao": "str", "tipo": "Receita"|"Despesa"
+            "id": int (opcional), "data": "YYYY-MM-DD", "valor": float,
+            "categoria": "Alimentação"|"Transporte"|"Lazer"|"Casa"|"Receita"|"Outros",
+            "descricao": "Resumo curto", "tipo": "Receita" ou "Despesa"
         }},
-        "msg_ia": "Resposta curta"
+        "msg_ia": "Resposta curta para o usuário"
     }}
     """
 
@@ -141,18 +140,18 @@ def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         if tipo_entrada == "audio":
-            # CORREÇÃO: Envia bytes diretos (inline data) em vez de arquivo
+            # Envia bytes do áudio
             audio_bytes = entrada.getvalue()
             response = model.generate_content(
-                [prompt_base, {"mime_type": "audio/wav", "data": audio_bytes}, "Extraia a transação deste áudio."],
+                [prompt_base, {"mime_type": "audio/wav", "data": audio_bytes}, "Transcreva e extraia a transação."],
                 generation_config={"response_mime_type": "application/json"}
             )
         else:
-            full_prompt = f"{prompt_base}\nUser: '{entrada}'"
+            full_prompt = f"{prompt_base}\nUsuário disse: '{entrada}'"
             response = model.generate_content(full_prompt, generation_config={"response_mime_type": "application/json"})
             
         return json.loads(response.text)
-    except Exception as e: return {"acao": "erro", "msg": f"Erro IA: {str(e)}"}
+    except Exception as e: return {"acao": "erro", "msg": f"Erro processamento: {str(e)}"}
 
 # =======================================================
 # LOGIN
@@ -170,13 +169,13 @@ if not st.session_state['user']:
     st.stop()
 
 # =======================================================
-# LÓGICA & NAVEGAÇÃO
+# LÓGICA PRINCIPAL
 # =======================================================
 user = st.session_state['user']
 df_total = carregar_transacoes(user['id'], 100)
 
 with st.sidebar:
-    st.write(f"Logado: {user['username']}")
+    st.write(f"Usuário: {user['username']}")
     meta_mensal = st.number_input("Meta Mensal", value=3000.0)
     if st.button("Sair"): st.session_state.clear(); st.rerun()
 
@@ -184,92 +183,92 @@ selected_nav = st.radio("Menu", ["💬 Chat", "💳 Extrato", "📈 Análise"], 
 st.markdown("---")
 
 # =======================================================
-# TELA 1: CHAT IA (COM CORREÇÃO DE ÁUDIO LOOP)
+# TELA 1: CHAT IA (Com Correção de Loop de Áudio)
 # =======================================================
 if selected_nav == "💬 Chat":
-    # Estado inicial
+    # Inicialização de Variáveis de Estado
     if "messages" not in st.session_state: st.session_state.messages = []
     if "pending_op" not in st.session_state: st.session_state.pending_op = None
-    # Controle de Áudio para evitar Loop
-    if "last_audio_id" not in st.session_state: st.session_state.last_audio_id = None
+    
+    # [CORREÇÃO LOOP] Variável para armazenar o ÚLTIMO áudio processado
+    if "last_processed_audio_val" not in st.session_state: st.session_state.last_processed_audio_val = None
 
-    # Histórico
+    # Exibe Histórico
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # --- ÁREA DE INPUT ---
+    # Área de Input (Só mostra se não estiver aguardando confirmação)
     if not st.session_state.pending_op:
         
-        # 1. Sugestões Rápidas (Acionam via clique)
+        # 1. Botões de Sugestão (Prioridade Alta)
         col_s1, col_s2, col_s3 = st.columns(3)
-        input_texto_simulado = None
-        
-        if col_s1.button("🍔 Almoço"): input_texto_simulado = "Gastei 30,00 com almoço"
-        if col_s2.button("🚗 Uber"): input_texto_simulado = "Gastei 15,00 Uber"
-        if col_s3.button("💰 Recebi"): input_texto_simulado = "Recebi 100,00 Pix"
+        clicked_suggestion = None
+        if col_s1.button("🍔 Almoço"): clicked_suggestion = "Gastei 30,00 com almoço"
+        if col_s2.button("🚗 Uber"): clicked_suggestion = "Gastei 15,00 Uber"
+        if col_s3.button("💰 Recebi"): clicked_suggestion = "Recebi 100,00 Pix"
 
-        # 2. Áudio Discreto (Sem label)
-        # O ID único ajuda a diferenciar gravações
-        audio_val = st.audio_input("Grave aqui", label_visibility="collapsed") 
+        # 2. Áudio Input (Prioridade Média)
+        audio_val = st.audio_input("Falar", label_visibility="collapsed")
         
-        # 3. Chat Input Texto
-        text_val = st.chat_input("Digite ou fale...")
+        # 3. Texto Input (Prioridade Baixa)
+        text_val = st.chat_input("Digite aqui...")
 
         # Lógica de Decisão (Quem processar?)
-        conteudo_final = None
-        tipo_final = None
+        final_input = None
+        final_type = None
 
-        # Prioridade 1: Botões de Sugestão
-        if input_texto_simulado:
-            conteudo_final = input_texto_simulado
-            tipo_final = "texto"
-            # Importante: Se clicou no botão, ignore qualquer áudio antigo que esteja no buffer
-            st.session_state.last_audio_id = audio_val 
+        if clicked_suggestion:
+            final_input = clicked_suggestion
+            final_type = "texto"
+            # Se clicou botão, invalida o áudio atual para não processar por engano
+            st.session_state.last_processed_audio_val = audio_val 
 
-        # Prioridade 2: Texto digitado
         elif text_val:
-            conteudo_final = text_val
-            tipo_final = "texto"
-            st.session_state.last_audio_id = audio_val
+            final_input = text_val
+            final_type = "texto"
+            st.session_state.last_processed_audio_val = audio_val
 
-        # Prioridade 3: Áudio (SOMENTE se for novo)
         elif audio_val:
-            # Compara se esse áudio já foi processado
-            if audio_val != st.session_state.last_audio_id:
-                conteudo_final = audio_val
-                tipo_final = "audio"
-                st.session_state.last_audio_id = audio_val # Marca como lido
-                st.session_state.messages.append({"role": "user", "content": "🎤 *Áudio recebido...*"})
+            # [CORREÇÃO LOOP] Verifica se esse áudio JÁ FOI processado
+            if audio_val != st.session_state.last_processed_audio_val:
+                final_input = audio_val
+                final_type = "audio"
+                # Marca como processado IMEDIATAMENTE
+                st.session_state.last_processed_audio_val = audio_val
+                st.session_state.messages.append({"role": "user", "content": "🎤 *Áudio enviado...*"})
             else:
-                # É um áudio antigo que o Streamlit manteve na tela, ignorar.
+                # É o mesmo áudio que ficou no componente após o rerun. Ignora.
                 pass
 
-        # Executa IA
-        if conteudo_final:
-            if tipo_final == "texto":
-                st.session_state.messages.append({"role": "user", "content": conteudo_final})
+        # Executa IA se tiver input válido
+        if final_input:
+            if final_type == "texto":
+                 st.session_state.messages.append({"role": "user", "content": final_input})
 
             with st.chat_message("assistant"):
-                with st.spinner("🤖"):
-                    res = agente_financeiro_ia(conteudo_final, df_total, tipo_final)
+                with st.spinner("Processando..."):
+                    res = agente_financeiro_ia(final_input, df_total, final_type)
                     
                     if res['acao'] in ['insert', 'update', 'delete']:
                         st.session_state.pending_op = res
-                        st.rerun()
+                        st.rerun() # Recarrega para mostrar confirmação
+                    elif res['acao'] == 'erro':
+                        st.warning("Não entendi o áudio/texto. Tente novamente.")
                     else:
                         msg = res.get('msg_ia', "Não entendi.")
                         st.markdown(msg)
                         st.session_state.messages.append({"role": "assistant", "content": msg})
 
-    # --- CONFIRMAÇÃO ---
+    # Tela de Confirmação (Pendente)
     if st.session_state.pending_op:
         op = st.session_state.pending_op
         d = op['dados']
         acao = op['acao'].upper()
         
         with st.container():
-            st.warning(f"⚠️ CONFIRMAR {acao}?")
+            st.warning(f"⚠️ CONFIRMAR: {acao}")
+            
             val_fmt = fmt_real(d.get('valor', 0))
             st.markdown(f"""
             <div class="app-card" style="border-left: 5px solid {'#00CC96' if d.get('tipo')=='Receita' else '#FF4B4B'};">
@@ -280,19 +279,22 @@ if selected_nav == "💬 Chat":
             """, unsafe_allow_html=True)
             
             c1, c2 = st.columns(2)
-            if c1.button("✅ Sim", type="primary"):
-                if executar_sql(op['acao'], {**d, 'user_id': user['id']}, user['id']):
+            if c1.button("✅ Confirmar", type="primary"):
+                dados_finais = d.copy()
+                dados_finais['user_id'] = user['id']
+                if executar_sql(op['acao'], dados_finais, user['id']):
                     st.toast("Sucesso!")
-                    st.session_state.messages.append({"role": "assistant", "content": "✅ Feito!"})
+                    st.session_state.messages.append({"role": "assistant", "content": f"✅ {acao} realizado."})
                 st.session_state.pending_op = None
-                time.sleep(1); st.rerun()
+                time.sleep(1)
+                st.rerun()
             
-            if c2.button("❌ Não"):
+            if c2.button("❌ Cancelar"):
                 st.session_state.pending_op = None
                 st.rerun()
 
 # =======================================================
-# TELA 2: EXTRATO (COM FIX DE DATA)
+# TELA 2: EXTRATO (Com Correção do Data Editor)
 # =======================================================
 elif selected_nav == "💳 Extrato":
     c1, c2 = st.columns([2,1])
@@ -317,11 +319,15 @@ elif selected_nav == "💳 Extrato":
         c_b.metric("Saiu", f"R$ {fmt_real(desp)}", delta_color="inverse")
 
         st.divider()
-        st.subheader("📝 Editar")
+        st.subheader("📝 Editar Lançamentos")
         
-        # Fix Data e Ordenação
+        # [CORREÇÃO ERRO TABELA]
+        # Preparamos os dados para o Editor garantindo que DATA seja objeto DATE, não string
         df_edit = df_mes.copy()
-        df_edit['data'] = pd.to_datetime(df_edit['data'])
+        # Converte para datetime e extrai apenas a data (date object)
+        df_edit['data'] = pd.to_datetime(df_edit['data']).dt.date 
+        
+        # Seleciona colunas e ordena
         df_edit = df_edit[['id', 'data', 'descricao', 'valor', 'categoria', 'tipo']].sort_values('data', ascending=False)
 
         mudancas = st.data_editor(
@@ -329,29 +335,42 @@ elif selected_nav == "💳 Extrato":
             column_config={
                 "id": None,
                 "valor": st.column_config.NumberColumn("R$", format="R$ %.2f", min_value=0.0),
-                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"), # Agora funciona pois recebe Date Objects
                 "tipo": st.column_config.SelectboxColumn("Tipo", options=["Receita", "Despesa"], required=True),
                 "categoria": st.column_config.SelectboxColumn("Categ.", options=["Alimentação", "Transporte", "Casa", "Lazer", "Outros"])
             },
-            hide_index=True, use_container_width=True, num_rows="dynamic", key="grid"
+            hide_index=True, use_container_width=True, num_rows="dynamic", key="grid_editor"
         )
 
-        if st.button("💾 Salvar"):
+        if st.button("💾 Salvar Alterações"):
             with st.spinner("Salvando..."):
                 ids_orig = df_mes['id'].tolist()
+                
+                # Detecta inserções e updates
                 for i, row in mudancas.iterrows():
                     d = row.to_dict()
-                    # Fix Data String
-                    if isinstance(d['data'], (pd.Timestamp, date)): d['data'] = d['data'].strftime('%Y-%m-%d')
                     
-                    if not pd.isna(d['id']): executar_sql('update', d, user['id'])
+                    # [IMPORTANTE] Converter Date Object de volta para String YYYY-MM-DD para o Supabase
+                    if isinstance(d['data'], (date, datetime)):
+                        d['data'] = d['data'].strftime('%Y-%m-%d')
+                    
+                    if pd.isna(d['id']): 
+                        # É um novo item inserido pela tabela? (Opcional: implementar insert se quiser)
+                        pass 
+                    else:
+                        executar_sql('update', d, user['id'])
                 
-                # Delete
+                # Detecta deleções
                 ids_novos = mudancas['id'].dropna().tolist()
-                for x in set(ids_orig) - set(ids_novos): executar_sql('delete', {'id': x}, user['id'])
+                removidos = set(ids_orig) - set(ids_novos)
+                for id_rem in removidos:
+                    executar_sql('delete', {'id': id_rem}, user['id'])
                 
-                st.toast("Atualizado!"); time.sleep(1); st.rerun()
-    else: st.info("Sem dados.")
+                st.toast("Atualizado com sucesso!")
+                time.sleep(1)
+                st.rerun()
+    else: 
+        st.info("Nenhuma transação neste período.")
 
 # =======================================================
 # TELA 3: ANÁLISE
@@ -370,4 +389,4 @@ elif selected_nav == "📈 Análise":
             for c, v in top.items():
                 st.write(f"**{c}**: R$ {fmt_real(v)}")
                 st.progress(int((v/gastos['valor'].sum())*100))
-        else: st.info("Sem gastos.")
+        else: st.info("Sem gastos este mês.")
