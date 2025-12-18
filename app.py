@@ -5,11 +5,12 @@ from supabase import create_client, Client
 from datetime import datetime, date, timedelta
 import json
 import google.generativeai as genai
+import time  # <--- 1. CORREÇÃO: Import necessário para time.sleep()
 
 # --- 1. Configuração Mobile-First ---
 st.set_page_config(page_title="AppFinanças", page_icon="💳", layout="wide", initial_sidebar_state="collapsed")
 
-# --- 2. CSS Otimizado (Removendo Sidebar Forçadamente) ---
+# --- 2. CSS Otimizado ---
 st.markdown("""
 <style>
     /* Ocultar Barra Lateral e Cabeçalho do Streamlit */
@@ -25,17 +26,24 @@ st.markdown("""
         padding-right: 0.5rem !important;
     }
     
-    /* MENU DE NAVEGAÇÃO (Pills) */
+    /* MENU DE NAVEGAÇÃO (Pills Horizontais) */
     div[role="radiogroup"] {
-        display: flex; flex-wrap: wrap; justify-content: center; 
-        background-color: #1E1E1E; padding: 4px; border-radius: 12px; margin-bottom: 15px;
+        display: flex; 
+        flex-direction: row; /* Garante direção horizontal */
+        justify-content: space-between; /* Espalha os itens */
+        background-color: #1E1E1E; 
+        padding: 4px; 
+        border-radius: 12px; 
+        margin-bottom: 15px;
+        width: 100%;
     }
     div[role="radiogroup"] label {
-        flex: 1 1 auto; /* Cresce para preencher */
+        flex: 1; /* Faz todos ocuparem o mesmo espaço */
         text-align: center; 
         background: transparent; border: none; 
         padding: 8px 4px; border-radius: 8px;
         cursor: pointer; color: #888; font-size: 0.9rem;
+        margin: 0 2px;
     }
     div[role="radiogroup"] label[data-checked="true"] {
         background-color: #00CC96 !important; color: #000 !important;
@@ -51,7 +59,7 @@ st.markdown("""
     
     /* INPUTS MAIORES (Touch Friendly) */
     .stButton button { width: 100%; height: 55px; border-radius: 12px; font-weight: 600; font-size: 1rem; }
-    input { font-size: 16px !important; } /* Evita zoom no iOS */
+    input { font-size: 16px !important; }
 
     /* STATUS FINANCEIRO */
     .budget-card {
@@ -79,13 +87,25 @@ try:
 except: IA_AVAILABLE = False
 
 # --- Backend Functions ---
+# 2. CORREÇÃO: Função ajustada para retornar as colunas certas para cada tabela
 def carregar_dados_generico(tabela, user_id):
+    colunas_padrao = ['id', 'descricao', 'valor', 'user_id', 'created_at']
+    
+    # Define colunas específicas se a tabela estiver vazia
+    if tabela == 'goals':
+        colunas_padrao = ['id', 'descricao', 'valor_alvo', 'valor_atual', 'data_limite', 'user_id']
+    elif tabela == 'recurrent_expenses':
+        colunas_padrao = ['id', 'descricao', 'valor', 'dia_vencimento', 'user_id']
+
     try:
         res = supabase.table(tabela).select("*").eq("user_id", user_id).execute()
         df = pd.DataFrame(res.data)
-        if df.empty: return pd.DataFrame(columns=['id', 'descricao', 'valor', 'user_id', 'created_at'])
+        
+        if df.empty: 
+            return pd.DataFrame(columns=colunas_padrao)
         return df
-    except: return pd.DataFrame(columns=['id', 'descricao', 'valor', 'user_id'])
+    except: 
+        return pd.DataFrame(columns=colunas_padrao)
 
 def carregar_transacoes(user_id, limite=None):
     try:
@@ -126,7 +146,6 @@ def limpar_json(texto):
 def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
     if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA Off"}
     
-    # Contexto reduzido para economizar tokens e ser rápido
     contexto = "[]"
     if not df_contexto.empty:
         contexto = df_contexto[['data', 'descricao', 'valor', 'categoria']].head(3).to_json(orient="records")
@@ -168,13 +187,14 @@ user = st.session_state['user']
 df_total = carregar_transacoes(user['id'], 200)
 
 # =======================================================
-# NAVEGAÇÃO PRINCIPAL (SUBSTITUI SIDEBAR)
+# NAVEGAÇÃO PRINCIPAL (CORRIGIDA PARA HORIZONTAL)
 # =======================================================
-# Opções curtas para caber no celular
+# 3. CORREÇÃO: Adicionado horizontal=True
 selected_nav = st.radio(
     "Navegação", 
     ["💬 Chat", "💳 Extrato", "📈 Análise", "⚙️ Ajustes"], 
-    label_visibility="collapsed"
+    label_visibility="collapsed",
+    horizontal=True
 )
 st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
 
@@ -185,13 +205,11 @@ if selected_nav == "💬 Chat":
     if "msgs" not in st.session_state: st.session_state.msgs = [{"role": "assistant", "content": f"Oi, {user['username']}! O que gastou hoje?"}]
     if "op_pendente" not in st.session_state: st.session_state.op_pendente = None
 
-    # Chat Container
     chat_container = st.container()
     with chat_container:
         for m in st.session_state.msgs:
             with st.chat_message(m["role"]): st.markdown(m["content"])
     
-    # Card de Confirmação Flutuante (se houver pendencia)
     if st.session_state.op_pendente:
         op = st.session_state.op_pendente
         d = op.get('dados', {})
@@ -209,10 +227,8 @@ if selected_nav == "💬 Chat":
         if c2.button("❌ Cancelar"):
             st.session_state.op_pendente = None; st.rerun()
     
-    # Input Area (Fixo no fluxo)
     else:
         st.markdown("---")
-        # Atalhos Rápidos
         col_a, col_b, col_c = st.columns(3)
         if col_a.button("☕ Café"): 
             st.session_state.msgs.append({"role": "user", "content": "Café R$ 5,00"})
@@ -240,7 +256,6 @@ if selected_nav == "💬 Chat":
 # 2. EXTRATO
 # =======================================================
 elif selected_nav == "💳 Extrato":
-    # Filtro Compacto
     c1, c2 = st.columns([2, 1])
     mes_sel = c1.selectbox("Mês", range(1,13), index=date.today().month-1, label_visibility="collapsed")
     ano_sel = c2.number_input("Ano", 2024, 2030, date.today().year, label_visibility="collapsed")
@@ -249,15 +264,10 @@ elif selected_nav == "💳 Extrato":
         df_total['data_dt'] = pd.to_datetime(df_total['data'], errors='coerce')
         df_mes = df_total[(df_total['data_dt'].dt.month == mes_sel) & (df_total['data_dt'].dt.year == ano_sel)].copy()
         
-        # Carregar Preferencias (Budget)
-        df_prefs = carregar_dados_generico("user_settings", user['id']) # Tabela ficticia, usando session ou hardcode
-        meta_mensal = 3500.0 # Padrão se não tiver
-        
         gastos = df_mes[df_mes['tipo'] == 'Despesa']['valor'].sum()
         receitas = df_mes[df_mes['tipo'] == 'Receita']['valor'].sum()
         saldo = receitas - gastos
 
-        # Card de Resumo
         st.markdown(f"""
         <div class="budget-card">
             <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
@@ -274,7 +284,6 @@ elif selected_nav == "💳 Extrato":
         </div>
         """, unsafe_allow_html=True)
 
-        # Editor
         df_edit = df_mes[['id', 'data', 'descricao', 'valor', 'categoria', 'tipo']].sort_values('data', ascending=False)
         mudancas = st.data_editor(
             df_edit,
@@ -282,7 +291,7 @@ elif selected_nav == "💳 Extrato":
                 "id": None,
                 "valor": st.column_config.NumberColumn("R$", format="%.2f", width="small"),
                 "descricao": st.column_config.TextColumn("Item", width="medium"),
-                "data": None, # Ocultar data no celular pra caber
+                "data": None,
                 "tipo": None,
                 "categoria": st.column_config.SelectboxColumn("Cat", options=["Alimentação", "Transporte", "Casa", "Lazer", "Outros"], width="small")
             },
@@ -290,7 +299,6 @@ elif selected_nav == "💳 Extrato":
         )
         
         if st.button("💾 Salvar Alterações", type="primary"):
-            # Lógica de Sync (Simplificada)
             ids_orig = df_edit['id'].tolist()
             ids_new = []
             
@@ -298,15 +306,14 @@ elif selected_nav == "💳 Extrato":
                 d = row.to_dict()
                 if isinstance(d.get('data'), (date, datetime)): d['data'] = d['data'].strftime('%Y-%m-%d')
                 
-                if pd.isna(d.get('id')): # Novo
+                if pd.isna(d.get('id')): 
                     if 'data' not in d or pd.isna(d['data']): d['data'] = str(date.today())
                     if 'tipo' not in d: d['tipo'] = 'Despesa'
                     executar_sql('transactions', 'insert', d, user['id'])
-                else: # Update
+                else: 
                     ids_new.append(d['id'])
                     executar_sql('transactions', 'update', d, user['id'])
             
-            # Deletes
             for x in set(ids_orig) - set(ids_new):
                 executar_sql('transactions', 'delete', {'id': x}, user['id'])
             st.rerun()
@@ -320,7 +327,6 @@ elif selected_nav == "📈 Análise":
     st.subheader("Para onde foi o dinheiro?")
     
     if not df_total.empty:
-        # Filtro fixo de Mês Atual para simplicidade mobile
         df_total['data_dt'] = pd.to_datetime(df_total['data'])
         df_chart = df_total[df_total['data_dt'].dt.month == date.today().month]
         df_chart = df_chart[df_chart['tipo'] == 'Despesa']
@@ -330,7 +336,6 @@ elif selected_nav == "📈 Análise":
             fig.update_layout(showlegend=False, margin=dict(t=0,b=0,l=0,r=0), height=300, paper_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
             
-            # Lista Top Gastos
             top_cats = df_chart.groupby('categoria')['valor'].sum().sort_values(ascending=False)
             for cat, val in top_cats.items():
                 st.markdown(f"""
@@ -349,7 +354,9 @@ elif selected_nav == "⚙️ Ajustes":
     
     # 1. Metas
     with st.expander("🎯 Metas & Sonhos", expanded=True):
+        # Garante que as colunas 'valor_alvo' e 'valor_atual' existam no DF
         df_metas = carregar_dados_generico("goals", user['id'])
+        
         edit_metas = st.data_editor(
             df_metas,
             num_rows="dynamic",
@@ -364,12 +371,13 @@ elif selected_nav == "⚙️ Ajustes":
             use_container_width=True
         )
         if st.button("Salvar Metas"):
-            # Lógica de salvamento segura (mesma da versão anterior)
             ids_orig = df_metas['id'].tolist() if not df_metas.empty else []
             ids_new = []
+            
             for i, row in edit_metas.iterrows():
                 d = row.to_dict()
-                if pd.isna(d.get('id')): executar_sql('goals', 'insert', d, user['id'])
+                if pd.isna(d.get('id')): 
+                    executar_sql('goals', 'insert', d, user['id'])
                 else: 
                     ids_new.append(d['id'])
                     executar_sql('goals', 'update', d, user['id'])
@@ -379,6 +387,7 @@ elif selected_nav == "⚙️ Ajustes":
                  
             for x in set(ids_orig) - set(ids_new):
                 executar_sql('goals', 'delete', {'id': x}, user['id'])
+            
             st.success("Atualizado!")
             time.sleep(1); st.rerun()
 
@@ -398,16 +407,18 @@ elif selected_nav == "⚙️ Ajustes":
             use_container_width=True
         )
         if st.button("Salvar Fixos"):
-            # Mesma logica segura
             ids_orig = df_recorrente['id'].tolist() if not df_recorrente.empty else []
+            ids_new = []
+            
             for i, row in edit_rec.iterrows():
                 d = row.to_dict()
                 if pd.isna(d.get('id')): executar_sql('recurrent_expenses', 'insert', d, user['id'])
-                else: executar_sql('recurrent_expenses', 'update', d, user['id'])
+                else: 
+                    ids_new.append(d['id'])
+                    executar_sql('recurrent_expenses', 'update', d, user['id'])
             
             if not edit_rec.empty and 'id' in edit_rec.columns:
                 ids_new = edit_rec['id'].dropna().tolist()
-            else: ids_new = []
 
             for x in set(ids_orig) - set(ids_new):
                 executar_sql('recurrent_expenses', 'delete', {'id': x}, user['id'])
