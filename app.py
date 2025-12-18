@@ -141,6 +141,10 @@ def upload_comprovante(arquivo, user_id):
         return supabase.storage.from_("comprovantes").get_public_url(nome)
     except: return None
 
+# Helper para formatar moeda PT-BR visualmente
+def fmt_real(valor):
+    return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
 # --- Agente IA V2 ---
 def agente_financeiro_ia(texto_usuario, df_contexto):
     if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA Off"}
@@ -149,16 +153,26 @@ def agente_financeiro_ia(texto_usuario, df_contexto):
     if not df_contexto.empty:
         contexto = df_contexto[['id', 'data', 'descricao', 'valor', 'categoria']].head(20).to_json(orient="records")
 
+    # MUDANÇA AQUI: Instrução explícita sobre ponto flutuante para a IA não arredondar ou errar formato
     prompt = f"""
     Agente SQL Mobile. Hoje: {date.today()}.
-    Contexto: {contexto}
+    Contexto Recente: {contexto}
     User: "{texto_usuario}"
     
-    Retorne JSON:
+    Regra IMPORTANTE: Valores monetários devem ser float com PONTO. Ex: 13,50 vira 13.50. NÃO arredonde.
+    
+    Retorne JSON estrito:
     {{
         "acao": "insert" | "update" | "delete" | "search" | "pergunta",
-        "dados": {{ "id": int (se achar), "data": "YYYY-MM-DD", "valor": float(exato. Ex:8,5 -> 8,5), "categoria": "str", "descricao": "str", "tipo": "Receita/Despesa" }},
-        "msg_ia": "Texto curto para mobile"
+        "dados": {{ 
+            "id": int (se achar no contexto), 
+            "data": "YYYY-MM-DD", 
+            "valor": float (Exato. Ex: 13.50), 
+            "categoria": "str", 
+            "descricao": "str", 
+            "tipo": "Receita" ou "Despesa" 
+        }},
+        "msg_ia": "Texto curto para mobile confirmando o valor exato"
     }}
     """
     try:
@@ -188,7 +202,6 @@ user = st.session_state['user']
 df_total = carregar_transacoes(user['id'], 60)
 
 # Menu Superior Horizontal (Estilo App)
-# O CSS lá em cima transforma este Radio em botões visuais
 selected_nav = st.radio("Navegação", ["💬 Chat", "💳 Extrato", "📈 Análise"], label_visibility="collapsed")
 
 st.markdown("---") # Divisor sutil
@@ -198,14 +211,14 @@ if selected_nav == "💬 Chat":
     if "messages" not in st.session_state: st.session_state.messages = []
     if "pending_op" not in st.session_state: st.session_state.pending_op = None
 
-    # Histórico (Limpo)
+    # Histórico
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Input (Sticky Bottom Nativo do Streamlit)
+    # Input
     if not st.session_state.pending_op:
-        if prompt := st.chat_input("Digite: Gastei 50 no Uber..."):
+        if prompt := st.chat_input("Digite: Gastei 13,50 na padaria..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             st.rerun()
 
@@ -228,13 +241,16 @@ if selected_nav == "💬 Chat":
         d = op['dados']
         tipo = op['acao'].upper()
         
+        # MUDANÇA AQUI: Formatação visual no card de confirmação
+        valor_formatado = fmt_real(d.get('valor', 0))
+        
         with st.container():
             st.info(f"CONFIRMAR {tipo}?")
             # Preview Card
             st.markdown(f"""
             <div class="app-card">
                 <div class="card-title">{d.get('descricao')}</div>
-                <div class="card-amount">R$ {d.get('valor')}</div>
+                <div class="card-amount">R$ {valor_formatado}</div>
                 <div class="card-meta">{d.get('categoria')} • {d.get('data')}</div>
             </div>
             """, unsafe_allow_html=True)
@@ -267,7 +283,7 @@ if selected_nav == "💬 Chat":
 
 # --- TELA 2: EXTRATO (DASHBOARD) ---
 elif selected_nav == "💳 Extrato":
-    # Filtro Compacto (Expander para não poluir)
+    # Filtro Compacto
     with st.expander("📅 Filtrar Data", expanded=False):
         c1, c2 = st.columns(2)
         mes = c1.selectbox("Mês", range(1,13), index=date.today().month-1)
@@ -277,14 +293,15 @@ elif selected_nav == "💳 Extrato":
     if not df_total.empty:
         df_mes = df_total[(df_total['data_dt'].dt.month == mes) & (df_total['data_dt'].dt.year == ano)]
         
-        # Resumo Cards (Side by Side Mobile friendly with CSS hack)
         rec = df_mes[df_mes['tipo'] == 'Receita']['valor'].sum()
         desp = df_mes[df_mes['tipo'] != 'Receita']['valor'].sum()
+        saldo = rec - desp
         
+        # MUDANÇA AQUI: Métricas com 2 casas decimais e vírgula
         col_a, col_b = st.columns(2)
-        col_a.metric("Entrou", f"R$ {rec:.0f}")
-        col_b.metric("Saiu", f"R$ {desp:.0f}", delta_color="inverse")
-        st.caption(f"Saldo Líquido: R$ {rec - desp:.2f}")
+        col_a.metric("Entrou", f"R$ {fmt_real(rec)}")
+        col_b.metric("Saiu", f"R$ {fmt_real(desp)}", delta_color="inverse")
+        st.caption(f"Saldo Líquido: R$ {fmt_real(saldo)}")
         
         st.markdown("### Histórico")
         
@@ -296,12 +313,14 @@ elif selected_nav == "💳 Extrato":
             cor_val = "txt-green" if is_receita else "txt-red"
             sinal = "+" if is_receita else "-"
             
-            # HTML Puro para controle total do layout
+            # MUDANÇA AQUI: Formatando valor individual da transação
+            valor_visual = fmt_real(row['valor'])
+            
             st.markdown(f"""
             <div class="app-card">
                 <div class="card-header">
                     <span class="card-title">{row['descricao']}</span>
-                    <span class="card-amount {cor_val}">{sinal} {row['valor']:.0f}</span>
+                    <span class="card-amount {cor_val}">{sinal} {valor_visual}</span>
                 </div>
                 <div class="card-header">
                     <span class="card-meta">{row['categoria']} • {row['data_dt'].strftime('%d/%m')}</span>
@@ -310,10 +329,6 @@ elif selected_nav == "💳 Extrato":
             </div>
             """, unsafe_allow_html=True)
             
-            # Ações escondidas no expander do próprio card? Não dá no HTML puro.
-            # Solução UX: Botão de ação discreto abaixo do card se precisar excluir
-            # Mas para manter limpo, deixamos a exclusão pelo Chat ("Apagar ID X") 
-            # ou um botão simples aqui:
             c_del, c_view = st.columns([1, 4])
             if c_del.button("🗑️", key=f"del_{row['id']}"):
                 executar_sql('delete', {'id': row['id']}, user['id'])
@@ -340,15 +355,13 @@ elif selected_nav == "📈 Análise":
             top_cats = gastos.groupby('categoria')['valor'].sum().sort_values(ascending=False).head(3)
             st.markdown("**Maiores Gastos:**")
             for cat, val in top_cats.items():
-                st.progress(int(val/gastos['valor'].sum()*100), text=f"{cat}: R$ {val:.0f}")
+                # MUDANÇA AQUI: Barra de progresso com valor exato formatado
+                st.progress(int(val/gastos['valor'].sum()*100), text=f"{cat}: R$ {fmt_real(val)}")
 
-# --- Rodapé Fixo (Sidebar usada apenas para Sair/Config) ---
+# --- Rodapé Fixo ---
 with st.sidebar:
     st.title("Configurações")
     st.write(f"Logado como: {user['username']}")
     if st.button("Sair da Conta"):
         st.session_state.clear()
         st.rerun()
-
-
-
