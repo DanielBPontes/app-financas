@@ -157,7 +157,7 @@ def agente_financeiro_ia(texto_usuario, df_contexto):
     Retorne JSON:
     {{
         "acao": "insert" | "update" | "delete" | "search" | "pergunta",
-        "dados": {{ "id": int (se achar), "data": "YYYY-MM-DD", "valor": float (nunca aproxime), "categoria": "str", "descricao": "str", "tipo": "Receita/Despesa" }},
+        "dados": {{ "id": int (se achar), "data": "YYYY-MM-DD", "valor": float(exato. Ex:8,5 -> 8,5), "categoria": "str", "descricao": "str", "tipo": "Receita/Despesa" }},
         "msg_ia": "Texto curto para mobile"
     }}
     """
@@ -349,5 +349,6 @@ with st.sidebar:
     if st.button("Sair da Conta"):
         st.session_state.clear()
         st.rerun()
+
 
 
