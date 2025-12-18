@@ -147,7 +147,7 @@ def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
     """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         
         if tipo_entrada == "audio":
             # Usa Bytes direto (Sem tempfile para evitar erros de permissão/cloud)
@@ -393,3 +393,4 @@ elif nav == "📈 Análise":
             st.metric("Total Gasto (Mês)", f"R$ {fmt_real(total)}")
         else:
             st.info("Sem gastos este mês.")
+
