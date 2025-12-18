@@ -112,7 +112,7 @@ def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
     """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-flash-latest')
         
         if tipo_entrada == "audio":
             audio_bytes = entrada.getvalue()
@@ -344,3 +344,4 @@ elif nav == "Análise":
         if not gastos.empty:
             fig = px.pie(gastos, values='valor', names='categoria', hole=0.5)
             st.plotly_chart(fig, use_container_width=True)
+
