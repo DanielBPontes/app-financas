@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from supabase import create_client, Client
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 import json
 import google.generativeai as genai
-import time  # <--- 1. CORREÇÃO: Import necessário para time.sleep()
+import time
 
 # --- 1. Configuração Mobile-First ---
 st.set_page_config(page_title="AppFinanças", page_icon="💳", layout="wide", initial_sidebar_state="collapsed")
@@ -13,12 +13,10 @@ st.set_page_config(page_title="AppFinanças", page_icon="💳", layout="wide", i
 # --- 2. CSS Otimizado ---
 st.markdown("""
 <style>
-    /* Ocultar Barra Lateral e Cabeçalho do Streamlit */
     section[data-testid="stSidebar"] {display: none !important;}
     .stAppHeader {display:none !important;} 
     .stDeployButton {display:none !important;}
     
-    /* Layout Mobile */
     .block-container {
         padding-top: 1rem !important; 
         padding-bottom: 5rem !important; 
@@ -26,11 +24,11 @@ st.markdown("""
         padding-right: 0.5rem !important;
     }
     
-    /* MENU DE NAVEGAÇÃO (Pills Horizontais) */
+    /* MENU DE NAVEGAÇÃO */
     div[role="radiogroup"] {
         display: flex; 
-        flex-direction: row; /* Garante direção horizontal */
-        justify-content: space-between; /* Espalha os itens */
+        flex-direction: row;
+        justify-content: space-between;
         background-color: #1E1E1E; 
         padding: 4px; 
         border-radius: 12px; 
@@ -38,7 +36,7 @@ st.markdown("""
         width: 100%;
     }
     div[role="radiogroup"] label {
-        flex: 1; /* Faz todos ocuparem o mesmo espaço */
+        flex: 1;
         text-align: center; 
         background: transparent; border: none; 
         padding: 8px 4px; border-radius: 8px;
@@ -50,18 +48,15 @@ st.markdown("""
         font-weight: 700; box-shadow: 0 2px 5px rgba(0,0,0,0.3);
     }
     
-    /* CARDS GERAIS */
     .app-card {
         background-color: #262730; padding: 15px; border-radius: 16px;
         border: 1px solid #333; margin-bottom: 12px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     
-    /* INPUTS MAIORES (Touch Friendly) */
     .stButton button { width: 100%; height: 55px; border-radius: 12px; font-weight: 600; font-size: 1rem; }
     input { font-size: 16px !important; }
 
-    /* STATUS FINANCEIRO */
     .budget-card {
         background: linear-gradient(135deg, #262730 0%, #1e1e1e 100%);
         padding: 20px; border-radius: 16px;
@@ -87,15 +82,16 @@ try:
 except: IA_AVAILABLE = False
 
 # --- Backend Functions ---
-# 2. CORREÇÃO: Função ajustada para retornar as colunas certas para cada tabela
+
 def carregar_dados_generico(tabela, user_id):
-    colunas_padrao = ['id', 'descricao', 'valor', 'user_id', 'created_at']
-    
-    # Define colunas específicas se a tabela estiver vazia
+    # Definição das colunas baseadas na nova estrutura do BD
     if tabela == 'goals':
         colunas_padrao = ['id', 'descricao', 'valor_alvo', 'valor_atual', 'data_limite', 'user_id']
     elif tabela == 'recurrent_expenses':
-        colunas_padrao = ['id', 'descricao', 'valor', 'dia_vencimento', 'user_id']
+        # Nova estrutura: valor_parcela, total, restantes, flag infinito
+        colunas_padrao = ['id', 'descricao', 'valor_parcela', 'valor_total', 'parcelas_restantes', 'eh_infinito', 'dia_vencimento', 'user_id']
+    else:
+        colunas_padrao = ['id', 'descricao', 'valor', 'user_id', 'created_at']
 
     try:
         res = supabase.table(tabela).select("*").eq("user_id", user_id).execute()
@@ -103,8 +99,15 @@ def carregar_dados_generico(tabela, user_id):
         
         if df.empty: 
             return pd.DataFrame(columns=colunas_padrao)
+        
+        # Garante que todas as colunas existam no DF mesmo que venham nulas do banco
+        for col in colunas_padrao:
+            if col not in df.columns:
+                df[col] = None
+                
         return df
-    except: 
+    except Exception as e: 
+        # st.error(f"Erro ao carregar {tabela}: {e}") # Debug se necessário
         return pd.DataFrame(columns=colunas_padrao)
 
 def carregar_transacoes(user_id, limite=None):
@@ -123,7 +126,7 @@ def executar_sql(tabela, acao, dados, user_id):
         ref = supabase.table(tabela)
         if acao == 'insert':
             if 'id' in dados and pd.isna(dados['id']): del dados['id']
-            dados['user_id'] = user_id
+            dados['user_id'] = user_id # Garante que o user_id está sendo enviado
             ref.insert(dados).execute()
         elif acao == 'update':
             if not dados.get('id') or pd.isna(dados.get('id')): return False
@@ -136,6 +139,7 @@ def executar_sql(tabela, acao, dados, user_id):
         st.error(f"Erro BD: {e}"); return False
 
 def fmt_real(valor):
+    if valor is None: return "0,00"
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 # --- Agente IA ---
@@ -177,19 +181,21 @@ if not st.session_state['user']:
         p = st.text_input("Senha", type="password")
         if st.button("Entrar", type="primary"):
             try:
+                # Busca usuário na tabela 'users' (sua tabela customizada)
                 resp = supabase.table("users").select("*").eq("username", u).eq("password", p).execute()
-                if resp.data: st.session_state['user'] = resp.data[0]; st.rerun()
+                if resp.data: 
+                    st.session_state['user'] = resp.data[0]; 
+                    st.rerun()
                 else: st.error("Login Inválido")
-            except: st.error("Erro Conexão")
+            except Exception as e: st.error(f"Erro Conexão: {e}")
     st.stop()
 
 user = st.session_state['user']
 df_total = carregar_transacoes(user['id'], 200)
 
 # =======================================================
-# NAVEGAÇÃO PRINCIPAL (CORRIGIDA PARA HORIZONTAL)
+# NAVEGAÇÃO
 # =======================================================
-# 3. CORREÇÃO: Adicionado horizontal=True
 selected_nav = st.radio(
     "Navegação", 
     ["💬 Chat", "💳 Extrato", "📈 Análise", "⚙️ Ajustes"], 
@@ -199,7 +205,7 @@ selected_nav = st.radio(
 st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
 
 # =======================================================
-# 1. CHAT (Lançamento Rápido)
+# 1. CHAT
 # =======================================================
 if selected_nav == "💬 Chat":
     if "msgs" not in st.session_state: st.session_state.msgs = [{"role": "assistant", "content": f"Oi, {user['username']}! O que gastou hoje?"}]
@@ -229,12 +235,7 @@ if selected_nav == "💬 Chat":
     
     else:
         st.markdown("---")
-        col_a, col_b, col_c = st.columns(3)
-        if col_a.button("☕ Café"): 
-            st.session_state.msgs.append({"role": "user", "content": "Café R$ 5,00"})
-            st.session_state.op_pendente = {"dados": {"descricao": "Café", "valor": 5.0, "categoria": "Alimentação", "tipo": "Despesa", "data": str(date.today())}}
-            st.rerun()
-            
+        col_a, col_b = st.columns(2)
         audio_val = st.audio_input("Voz", label_visibility="collapsed")
         text_val = st.chat_input("Ex: Almoço 30 reais")
 
@@ -347,14 +348,13 @@ elif selected_nav == "📈 Análise":
         else: st.info("Nada gasto este mês.")
 
 # =======================================================
-# 4. AJUSTES (ANTIGA SIDEBAR)
+# 4. AJUSTES (NOVA LÓGICA DE RECORRÊNCIA)
 # =======================================================
 elif selected_nav == "⚙️ Ajustes":
     st.subheader("Configurações")
     
     # 1. Metas
     with st.expander("🎯 Metas & Sonhos", expanded=True):
-        # Garante que as colunas 'valor_alvo' e 'valor_atual' existam no DF
         df_metas = carregar_dados_generico("goals", user['id'])
         
         edit_metas = st.data_editor(
@@ -365,7 +365,7 @@ elif selected_nav == "⚙️ Ajustes":
                 "descricao": "Meta",
                 "valor_alvo": st.column_config.NumberColumn("Alvo", format="R$ %.2f"),
                 "valor_atual": st.column_config.NumberColumn("Guardado", format="R$ %.2f"),
-                "data_limite": None 
+                "data_limite": st.column_config.DateColumn("Prazo") 
             },
             key="editor_metas_adj",
             use_container_width=True
@@ -391,27 +391,41 @@ elif selected_nav == "⚙️ Ajustes":
             st.success("Atualizado!")
             time.sleep(1); st.rerun()
 
-    # 2. Fixos
-    with st.expander("🔄 Contas Fixas"):
+    # 2. Recorrências (Lógica Nova)
+    with st.expander("🔄 Contas Fixas & Parcelamentos"):
+        st.info("💡 Marque 'Infinito' para assinaturas (Netflix, Luz). Desmarque para compras parceladas.")
+        
         df_recorrente = carregar_dados_generico("recurrent_expenses", user['id'])
+        
         edit_rec = st.data_editor(
             df_recorrente,
             num_rows="dynamic",
             column_config={
                 "id": None, "user_id": None, "created_at": None,
-                "descricao": "Conta",
-                "valor": st.column_config.NumberColumn("R$", format="%.2f"),
-                "dia_vencimento": st.column_config.NumberColumn("Dia", min_value=1, max_value=31)
+                "descricao": st.column_config.TextColumn("Nome (ex: iPhone, Netflix)"),
+                "eh_infinito": st.column_config.CheckboxColumn("Infinito?", default=False),
+                "valor_parcela": st.column_config.NumberColumn("Valor Parcela", format="R$ %.2f"),
+                "dia_vencimento": st.column_config.NumberColumn("Dia Venc.", min_value=1, max_value=31),
+                
+                # Campos apenas para parcelados
+                "parcelas_restantes": st.column_config.NumberColumn("Faltam (Meses)", min_value=0, step=1),
+                "valor_total": st.column_config.NumberColumn("Total Compra (Opcional)", format="R$ %.2f"),
             },
             key="editor_rec_adj",
             use_container_width=True
         )
+        
         if st.button("Salvar Fixos"):
             ids_orig = df_recorrente['id'].tolist() if not df_recorrente.empty else []
             ids_new = []
             
             for i, row in edit_rec.iterrows():
                 d = row.to_dict()
+                
+                # Lógica de limpeza simples
+                if d.get('eh_infinito'):
+                    d['parcelas_restantes'] = 0 # Zera parcelas se for infinito
+                
                 if pd.isna(d.get('id')): executar_sql('recurrent_expenses', 'insert', d, user['id'])
                 else: 
                     ids_new.append(d['id'])
