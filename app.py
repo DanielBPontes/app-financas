@@ -19,59 +19,39 @@ st.set_page_config(
 # --- 2. CSS Otimizado e Correções de Layout ---
 st.markdown("""
 <style>
-    /* Esconde elementos nativos desnecessários */
-    section[data-testid="stSidebar"] {display: none !important;}
-    .stAppHeader {display:none !important;} 
-    .stDeployButton {display:none !important;}
-    
-    /* Ajuste do container principal para evitar corte lateral */
-    .block-container {
-        padding-top: 1rem !important; 
-        padding-bottom: 5rem !important; 
-        padding-left: 1rem !important; 
-        padding-right: 1rem !important;
-        max_width: 100% !important;
+    /* Fundo geral mais escuro e limpo */
+    .stApp {
+        background-color: #0E1117;
     }
-    
-    /* MENU DE NAVEGAÇÃO ESTILIZADO */
-    div[role="radiogroup"] {
-        display: flex; 
-        flex-direction: row;
-        justify-content: space-between;
-        background-color: #1E1E1E; 
-        padding: 5px; 
-        border-radius: 16px; 
-        margin-bottom: 20px;
-        border: 1px solid #333;
-    }
-    div[role="radiogroup"] label {
-        flex: 1;
-        text-align: center; 
-        background: transparent; border: none; 
-        padding: 10px 5px; border-radius: 12px;
-        cursor: pointer; color: #888; font-size: 0.95rem; font-weight: 500;
-        transition: all 0.3s ease;
-    }
-    div[role="radiogroup"] label[data-checked="true"] {
-        background-color: #00CC96 !important; color: #121212 !important;
-        font-weight: 800; box-shadow: 0 4px 10px rgba(0, 204, 150, 0.3);
-    }
-    
-    /* CARDS DE KPI */
-    .kpi-card {
-        background-color: #262730;
-        padding: 15px;
-        border-radius: 12px;
-        border: 1px solid #333;
-        text-align: center;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
-    .kpi-title { font-size: 0.8rem; color: #aaa; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px;}
-    .kpi-value { font-size: 1.4rem; font-weight: bold; color: #fff; }
 
-    /* Inputs e Botões */
-    .stButton button { width: 100%; border-radius: 10px; font-weight: 600; height: 50px; }
-    input { font-size: 16px !important; }
+    /* Cards com efeito de vidro (Glassmorphism) */
+    div[data-testid="stMetric"], div.css-1r6slb0 {
+        background-color: rgba(255, 255, 255, 0.05); /* Transparente */
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 20px;
+        border-radius: 15px;
+        backdrop-filter: blur(10px); /* O desfoque */
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        transition: transform 0.2s;
+    }
+    
+    /* Efeito Hover nos cards */
+    div[data-testid="stMetric"]:hover {
+        transform: translateY(-2px);
+        border-color: #00CC96;
+    }
+
+    /* Títulos mais modernos */
+    h1, h2, h3 {
+        font-family: 'Inter', sans-serif;
+        font-weight: 700 !important;
+        letter-spacing: -0.5px;
+    }
+    
+    /* Remove padding excessivo do topo */
+    .block-container {
+        padding-top: 2rem !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -590,4 +570,5 @@ st.markdown("<br><hr>", unsafe_allow_html=True)
 if st.button("Sair da Conta", type="secondary"):
     st.session_state.clear()
     st.rerun()
+
 
