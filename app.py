@@ -1,69 +1,102 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from supabase import create_client, Client
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import json
 import google.generativeai as genai
 import time
 
-# --- 1. Configuração Mobile-First ---
-st.set_page_config(page_title="AppFinanças", page_icon="💳", layout="wide", initial_sidebar_state="collapsed")
+# --- 1. Configuração Mobile-First & Layout ---
+st.set_page_config(
+    page_title="AppFinanças",
+    page_icon="💳",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# --- 2. CSS Otimizado ---
+# --- 2. CSS Otimizado e Correções de Layout ---
 st.markdown("""
 <style>
+    /* Esconde elementos nativos desnecessários */
     section[data-testid="stSidebar"] {display: none !important;}
     .stAppHeader {display:none !important;} 
     .stDeployButton {display:none !important;}
     
+    /* Ajuste do container principal para evitar corte lateral */
     .block-container {
         padding-top: 1rem !important; 
         padding-bottom: 5rem !important; 
-        padding-left: 0.5rem !important; 
-        padding-right: 0.5rem !important;
+        padding-left: 1rem !important; 
+        padding-right: 1rem !important;
+        max_width: 100% !important;
     }
     
-    /* MENU DE NAVEGAÇÃO */
+    /* MENU DE NAVEGAÇÃO ESTILIZADO */
     div[role="radiogroup"] {
         display: flex; 
         flex-direction: row;
         justify-content: space-between;
         background-color: #1E1E1E; 
-        padding: 4px; 
-        border-radius: 12px; 
-        margin-bottom: 15px;
-        width: 100%;
+        padding: 5px; 
+        border-radius: 16px; 
+        margin-bottom: 20px;
+        border: 1px solid #333;
     }
     div[role="radiogroup"] label {
         flex: 1;
         text-align: center; 
         background: transparent; border: none; 
-        padding: 8px 4px; border-radius: 8px;
-        cursor: pointer; color: #888; font-size: 0.9rem;
-        margin: 0 2px;
+        padding: 10px 5px; border-radius: 12px;
+        cursor: pointer; color: #888; font-size: 0.95rem; font-weight: 500;
+        transition: all 0.3s ease;
     }
     div[role="radiogroup"] label[data-checked="true"] {
-        background-color: #00CC96 !important; color: #000 !important;
-        font-weight: 700; box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        background-color: #00CC96 !important; color: #121212 !important;
+        font-weight: 800; box-shadow: 0 4px 10px rgba(0, 204, 150, 0.3);
     }
     
-    .app-card {
-        background-color: #262730; padding: 15px; border-radius: 16px;
-        border: 1px solid #333; margin-bottom: 12px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    /* CARDS DE KPI */
+    .kpi-card {
+        background-color: #262730;
+        padding: 15px;
+        border-radius: 12px;
+        border: 1px solid #333;
+        text-align: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
-    
-    .stButton button { width: 100%; height: 55px; border-radius: 12px; font-weight: 600; font-size: 1rem; }
-    input { font-size: 16px !important; }
+    .kpi-title { font-size: 0.8rem; color: #aaa; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px;}
+    .kpi-value { font-size: 1.4rem; font-weight: bold; color: #fff; }
 
-    .budget-card {
-        background: linear-gradient(135deg, #262730 0%, #1e1e1e 100%);
-        padding: 20px; border-radius: 16px;
-        border-left: 6px solid #00CC96; margin-bottom: 20px;
-    }
+    /* Inputs e Botões */
+    .stButton button { width: 100%; border-radius: 10px; font-weight: 600; height: 50px; }
+    input { font-size: 16px !important; }
 </style>
 """, unsafe_allow_html=True)
+
+# --- Funções Utilitárias ---
+def fmt_real(valor):
+    if valor is None or pd.isna(valor): return "0,00"
+    return f"{float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def parse_brl_input(valor_str):
+    """
+    Tenta corrigir entradas bizarras como 20.000 (que o python lê como 20.0)
+    se o usuário estiver pensando em português.
+    """
+    if isinstance(valor_str, (int, float)):
+        return float(valor_str)
+    try:
+        # Se for string, remove formatações de milhar e ajusta decimal
+        v = str(valor_str).replace("R$", "").strip()
+        if "," in v and "." in v: # Formato 1.000,00
+            v = v.replace(".", "").replace(",", ".")
+        elif "," in v: # Formato 1000,00
+            v = v.replace(",", ".")
+        return float(v)
+    except:
+        return 0.0
 
 # --- Conexões ---
 @st.cache_resource
@@ -84,7 +117,6 @@ except: IA_AVAILABLE = False
 # --- Backend Functions ---
 
 def carregar_dados_generico(tabela, user_id):
-    # Definição das colunas baseadas na nova estrutura do BD
     if tabela == 'goals':
         colunas_padrao = ['id', 'descricao', 'valor_alvo', 'valor_atual', 'data_limite', 'user_id']
     elif tabela == 'recurrent_expenses':
@@ -96,34 +128,21 @@ def carregar_dados_generico(tabela, user_id):
         res = supabase.table(tabela).select("*").eq("user_id", user_id).execute()
         df = pd.DataFrame(res.data)
         
-        # Se estiver vazio, cria o DataFrame com as colunas corretas
-        if df.empty: 
-            df = pd.DataFrame(columns=colunas_padrao)
-        
-        # Garante que todas as colunas existam
+        if df.empty: df = pd.DataFrame(columns=colunas_padrao)
         for col in colunas_padrao:
-            if col not in df.columns:
-                df[col] = None
+            if col not in df.columns: df[col] = None
 
-        # --- CORREÇÃO DE TIPAGEM (O SEGREDO DO FIX) ---
-        # O Streamlit data_editor exige tipos certos para funcionar
-        
+        # Tratamento de Tipos
         if tabela == 'goals':
-            df['valor_alvo'] = pd.to_numeric(df['valor_alvo'], errors='coerce')
-            df['valor_atual'] = pd.to_numeric(df['valor_atual'], errors='coerce')
-            df['data_limite'] = pd.to_datetime(df['data_limite'], errors='coerce') # Importante para o DateColumn
-
+            df['valor_alvo'] = pd.to_numeric(df['valor_alvo'], errors='coerce').fillna(0.0)
+            df['valor_atual'] = pd.to_numeric(df['valor_atual'], errors='coerce').fillna(0.0)
+            df['data_limite'] = pd.to_datetime(df['data_limite'], errors='coerce')
         elif tabela == 'recurrent_expenses':
             df['valor_parcela'] = pd.to_numeric(df['valor_parcela'], errors='coerce')
-            df['valor_total'] = pd.to_numeric(df['valor_total'], errors='coerce')
-            df['parcelas_restantes'] = pd.to_numeric(df['parcelas_restantes'], errors='coerce').fillna(0).astype(int)
-            df['dia_vencimento'] = pd.to_numeric(df['dia_vencimento'], errors='coerce')
             df['eh_infinito'] = df['eh_infinito'].astype(bool)
-
+            
         return df
-    except Exception as e: 
-        # Em caso de erro grave, retorna vazio para não quebrar a tela
-        return pd.DataFrame(columns=colunas_padrao)
+    except Exception as e: return pd.DataFrame(columns=colunas_padrao)
 
 def carregar_transacoes(user_id, limite=None):
     try:
@@ -131,7 +150,9 @@ def carregar_transacoes(user_id, limite=None):
         if limite: query = query.limit(limite)
         res = query.execute()
         df = pd.DataFrame(res.data)
-        if not df.empty: df['valor'] = pd.to_numeric(df['valor'])
+        if not df.empty: 
+            df['valor'] = pd.to_numeric(df['valor'])
+            df['data'] = pd.to_datetime(df['data']).dt.date
         else: return pd.DataFrame(columns=['id', 'data', 'descricao', 'valor', 'categoria', 'tipo', 'user_id'])
         return df
     except: return pd.DataFrame()
@@ -141,7 +162,7 @@ def executar_sql(tabela, acao, dados, user_id):
         ref = supabase.table(tabela)
         if acao == 'insert':
             if 'id' in dados and pd.isna(dados['id']): del dados['id']
-            dados['user_id'] = user_id # Garante que o user_id está sendo enviado
+            dados['user_id'] = user_id
             ref.insert(dados).execute()
         elif acao == 'update':
             if not dados.get('id') or pd.isna(dados.get('id')): return False
@@ -153,36 +174,52 @@ def executar_sql(tabela, acao, dados, user_id):
     except Exception as e:
         st.error(f"Erro BD: {e}"); return False
 
-def fmt_real(valor):
-    if valor is None: return "0,00"
-    return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-# --- Agente IA ---
-def limpar_json(texto):
-    texto = texto.replace("```json", "").replace("```", "").strip()
-    return json.loads(texto)
-
+# --- Agente IA (Chat) ---
 def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
     if not IA_AVAILABLE: return {"acao": "erro", "msg": "IA Off"}
     
+    # Otimização: Mandar apenas colunas relevantes para economizar tokens
     contexto = "[]"
     if not df_contexto.empty:
-        contexto = df_contexto[['data', 'descricao', 'valor', 'categoria']].head(3).to_json(orient="records")
+        contexto = df_contexto[['data', 'descricao', 'valor', 'categoria']].head(10).to_json(orient="records", date_format="iso")
 
     prompt = f"""
-    Contexto: {contexto}. Data Hoje: {date.today()}.
-    Interprete: '{entrada}'.
-    Se for gasto/receita, retorne JSON: {{ "acao": "insert", "dados": {{ "data": "YYYY-MM-DD", "valor": 0.00, "categoria": "Categoria", "descricao": "Curta", "tipo": "Despesa" }}, "msg_ia": "Texto curto" }}
-    Se não, retorne: {{ "acao": "chat", "msg_ia": "Resposta curta" }}
+    Você é um assistente financeiro pessoal.
+    Contexto Recente do usuário (JSON): {contexto}.
+    Data Hoje: {date.today()}.
+    
+    Entrada do usuário: '{entrada}'.
+    
+    Instruções:
+    1. Se for adicionar gasto/receita, retorne JSON estrito: {{ "acao": "insert", "dados": {{ "data": "YYYY-MM-DD", "valor": 0.00, "categoria": "Categoria (Ex: Alimentação, Lazer, Casa, Transporte, Investimento)", "descricao": "Curta", "tipo": "Despesa" ou "Receita" }}, "msg_ia": "Confirmação curta" }}
+    2. Se for análise ou dúvida, responda como um consultor financeiro breve. Retorne: {{ "acao": "chat", "msg_ia": "Sua resposta aqui" }}
     """
     try:
-        model = genai.GenerativeModel('gemini-flash-latest')
-        if tipo_entrada == "audio":
-            response = model.generate_content([prompt, {"mime_type": "audio/wav", "data": entrada.getvalue()}], generation_config={"response_mime_type": "application/json"})
-        else:
-            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return limpar_json(response.text)
-    except: return {"acao": "erro", "msg": "Erro IA"}
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Configuração para resposta JSON
+        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        return json.loads(response.text)
+    except Exception as e: return {"acao": "erro", "msg": f"Erro IA: {e}"}
+
+def analisar_gastos_ia(df_mes):
+    """Gera insights sobre o mês atual"""
+    if not IA_AVAILABLE or df_mes.empty: return "Sem dados ou IA indisponível."
+    
+    csv_data = df_mes.to_csv(index=False)
+    prompt = f"""
+    Analise estes dados financeiros do mês (CSV):
+    {csv_data}
+    
+    Seja breve e direto (estilo notificação de app de banco).
+    1. Onde estou gastando demais?
+    2. Uma sugestão para economizar.
+    Use emojis. Máximo 3 linhas.
+    """
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        res = model.generate_content(prompt)
+        return res.text
+    except: return "Não consegui analisar agora."
 
 # =======================================================
 # LOGIN
@@ -190,271 +227,366 @@ def agente_financeiro_ia(entrada, df_contexto, tipo_entrada="texto"):
 if 'user' not in st.session_state: st.session_state['user'] = None
 
 if not st.session_state['user']:
-    st.markdown("<br><br><h2 style='text-align:center'>🔒 AppFinanças</h2>", unsafe_allow_html=True)
-    with st.container(border=True):
-        u = st.text_input("Usuário")
-        p = st.text_input("Senha", type="password")
-        if st.button("Entrar", type="primary"):
-            try:
-                # Busca usuário na tabela 'users' (sua tabela customizada)
-                resp = supabase.table("users").select("*").eq("username", u).eq("password", p).execute()
-                if resp.data: 
-                    st.session_state['user'] = resp.data[0]; 
-                    st.rerun()
-                else: st.error("Login Inválido")
-            except Exception as e: st.error(f"Erro Conexão: {e}")
+    c1, c2, c3 = st.columns([1,2,1])
+    with c2:
+        st.markdown("<br><br><h1 style='text-align:center'>💳</h1>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align:center'>AppFinanças</h3>", unsafe_allow_html=True)
+        with st.form("login_form"):
+            u = st.text_input("Usuário")
+            p = st.text_input("Senha", type="password")
+            submitted = st.form_submit_button("Entrar", type="primary")
+            if submitted:
+                try:
+                    resp = supabase.table("users").select("*").eq("username", u).eq("password", p).execute()
+                    if resp.data: 
+                        st.session_state['user'] = resp.data[0]; 
+                        st.rerun()
+                    else: st.error("Login Inválido")
+                except Exception as e: st.error(f"Erro Conexão: {e}")
     st.stop()
 
 user = st.session_state['user']
-df_total = carregar_transacoes(user['id'], 200)
+# Carrega dados globais (últimas 300 transações para garantir histórico)
+df_total = carregar_transacoes(user['id'], 300)
 
 # =======================================================
 # NAVEGAÇÃO
 # =======================================================
+# Usando icones mais modernos e nomes claros
 selected_nav = st.radio(
-    "Navegação", 
-    ["💬 Chat", "💳 Extrato", "📈 Análise", "⚙️ Ajustes"], 
+    "Menu", 
+    ["💬 Chat", "💳 Extrato", "📊 Dashboard", "🎯 Metas"], 
     label_visibility="collapsed",
     horizontal=True
 )
-st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
 
 # =======================================================
-# 1. CHAT
+# 1. CHAT (IA)
 # =======================================================
 if selected_nav == "💬 Chat":
-    if "msgs" not in st.session_state: st.session_state.msgs = [{"role": "assistant", "content": f"Oi, {user['username']}! O que gastou hoje?"}]
-    if "op_pendente" not in st.session_state: st.session_state.op_pendente = None
-
-    chat_container = st.container()
+    st.markdown("### Assistente IA")
+    if "msgs" not in st.session_state: st.session_state.msgs = [{"role": "assistant", "content": f"Olá! Me diga quanto gastou ou pergunte sobre suas finanças."}]
+    
+    # Container para histórico (scrollável)
+    chat_container = st.container(height=400)
     with chat_container:
         for m in st.session_state.msgs:
             with st.chat_message(m["role"]): st.markdown(m["content"])
-    
-    if st.session_state.op_pendente:
+
+    # Se houver operação pendente (IA detectou gasto)
+    if "op_pendente" in st.session_state and st.session_state.op_pendente:
         op = st.session_state.op_pendente
         d = op.get('dados', {})
-        st.markdown(f"""
-        <div class="app-card" style="border-left: 5px solid {'#00CC96' if d.get('tipo')=='Receita' else '#FF4B4B'};">
-            <h3 style="margin:0">{d.get('descricao')}</h3>
-            <h1 style="margin:0">R$ {fmt_real(d.get('valor', 0))}</h1>
-            <p style="margin:0; color:#888">{d.get('categoria')} • {d.get('data')}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        if c1.button("✅ Salvar", type="primary"):
-            executar_sql('transactions', 'insert', d, user['id'])
-            st.toast("Salvo!"); st.session_state.op_pendente = None; st.rerun()
-        if c2.button("❌ Cancelar"):
-            st.session_state.op_pendente = None; st.rerun()
-    
-    else:
-        st.markdown("---")
-        col_a, col_b = st.columns(2)
-        audio_val = st.audio_input("Voz", label_visibility="collapsed")
-        text_val = st.chat_input("Ex: Almoço 30 reais")
+        
+        with st.container():
+            st.info("Confirma o lançamento abaixo?")
+            col_card, col_actions = st.columns([3, 1])
+            with col_card:
+                st.markdown(f"**{d.get('descricao')}** | R$ {fmt_real(d.get('valor', 0))}")
+                st.caption(f"{d.get('categoria')} • {d.get('data')}")
+            with col_actions:
+                if st.button("✅", key="confirm_btn"):
+                    executar_sql('transactions', 'insert', d, user['id'])
+                    st.toast("Lançamento salvo!")
+                    st.session_state.msgs.append({"role": "assistant", "content": "Salvo com sucesso! 📝"})
+                    st.session_state.op_pendente = None
+                    st.rerun()
+                if st.button("❌", key="cancel_btn"):
+                    st.session_state.op_pendente = None
+                    st.rerun()
 
-        final_input, tipo = None, "texto"
-        if text_val: final_input = text_val
-        elif audio_val: final_input = audio_val; tipo = "audio"
-
-        if final_input:
-            user_msg = "🎤 *Áudio*" if tipo == "audio" else final_input
-            st.session_state.msgs.append({"role": "user", "content": user_msg})
-            with st.chat_message("assistant"):
-                with st.spinner("..."):
-                    res = agente_financeiro_ia(final_input, df_total, tipo)
-                    if res.get('acao') == 'insert': st.session_state.op_pendente = res
-                    else: st.session_state.msgs.append({"role": "assistant", "content": res.get('msg_ia')})
-            st.rerun()
+    # Input Area
+    input_container = st.container()
+    with input_container:
+        texto = st.chat_input("Ex: 'Gastei 50 reais no mc donalds' ou 'Audio'")
+        # Simulação de botão de áudio (Streamlit nativo para audio input está em beta/recente)
+        audio = st.audio_input("Gravar Áudio", label_visibility="collapsed")
+        
+        prompt_final = None
+        tipo = "texto"
+        
+        if texto: prompt_final = texto
+        elif audio: prompt_final = audio; tipo = "audio"
+        
+        if prompt_final:
+            st.session_state.msgs.append({"role": "user", "content": "🎤 Áudio enviado" if tipo == "audio" else prompt_final})
+            
+            with st.spinner("Processando..."):
+                res = agente_financeiro_ia(prompt_final, df_total, tipo)
+                
+                if res.get('acao') == 'insert':
+                    st.session_state.op_pendente = res
+                    st.rerun() # Recarrega para mostrar a confirmação
+                else:
+                    st.session_state.msgs.append({"role": "assistant", "content": res.get('msg_ia', 'Não entendi.')})
+                    st.rerun()
 
 # =======================================================
-# 2. EXTRATO
+# 2. EXTRATO (Corrigido Bug Lateral)
 # =======================================================
 elif selected_nav == "💳 Extrato":
-    c1, c2 = st.columns([2, 1])
-    mes_sel = c1.selectbox("Mês", range(1,13), index=date.today().month-1, label_visibility="collapsed")
-    ano_sel = c2.number_input("Ano", 2024, 2030, date.today().year, label_visibility="collapsed")
+    col_filtro1, col_filtro2 = st.columns(2)
+    mes_atual = date.today().month
+    ano_atual = date.today().year
+    
+    mes_sel = col_filtro1.selectbox("Mês", range(1,13), index=mes_atual-1)
+    ano_sel = col_filtro2.number_input("Ano", 2023, 2030, value=ano_atual)
 
     if not df_total.empty:
-        df_total['data_dt'] = pd.to_datetime(df_total['data'], errors='coerce')
-        df_mes = df_total[(df_total['data_dt'].dt.month == mes_sel) & (df_total['data_dt'].dt.year == ano_sel)].copy()
+        # Filtro de Data
+        df_total['data_dt'] = pd.to_datetime(df_total['data'])
+        mask = (df_total['data_dt'].dt.month == mes_sel) & (df_total['data_dt'].dt.year == ano_sel)
+        df_mes = df_total[mask].copy().sort_values('data', ascending=False)
         
-        gastos = df_mes[df_mes['tipo'] == 'Despesa']['valor'].sum()
-        receitas = df_mes[df_mes['tipo'] == 'Receita']['valor'].sum()
-        saldo = receitas - gastos
-
+        # Resumo Rápido
+        g = df_mes[df_mes['tipo'] == 'Despesa']['valor'].sum()
+        r = df_mes[df_mes['tipo'] == 'Receita']['valor'].sum()
+        s = r - g
+        
+        # Barra de Status Visual
         st.markdown(f"""
-        <div class="budget-card">
-            <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
-                <span style="color:#FF4B4B">▼ Gastos</span>
-                <span style="font-size:1.2em; font-weight:bold">R$ {fmt_real(gastos)}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between;">
-                <span style="color:#00CC96">▲ Receitas</span>
-                <span style="font-size:1.2em; font-weight:bold">R$ {fmt_real(receitas)}</span>
-            </div>
-            <div style="margin-top:15px; padding-top:10px; border-top:1px solid #444; text-align:right">
-                <small>Saldo:</small> <b style="color:{'#00CC96' if saldo >=0 else '#FF4B4B'}">R$ {fmt_real(saldo)}</b>
-            </div>
+        <div style="display:flex; justify-content:space-between; padding: 10px; background: #262730; border-radius: 8px; margin-bottom: 15px;">
+            <div style="color:#FF5252">📉 R$ {fmt_real(g)}</div>
+            <div style="font-weight:bold; color:{'#00CC96' if s>=0 else '#FF5252'}">Saldo: R$ {fmt_real(s)}</div>
+            <div style="color:#00CC96">📈 R$ {fmt_real(r)}</div>
         </div>
         """, unsafe_allow_html=True)
 
-        df_edit = df_mes[['id', 'data', 'descricao', 'valor', 'categoria', 'tipo']].sort_values('data', ascending=False)
+        # Editor de Dados (Ajustado para não bugar layout)
+        # O segredo é não usar colunas aqui se a tela for pequena, ou usar container_width
+        
+        df_edit = df_mes[['id', 'data', 'descricao', 'valor', 'categoria', 'tipo']]
+        
         mudancas = st.data_editor(
             df_edit,
             column_config={
                 "id": None,
-                "valor": st.column_config.NumberColumn("R$", format="%.2f", width="small"),
-                "descricao": st.column_config.TextColumn("Item", width="medium"),
-                "data": None,
-                "tipo": None,
-                "categoria": st.column_config.SelectboxColumn("Cat", options=["Alimentação", "Transporte", "Casa", "Lazer", "Outros"], width="small")
+                "data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                "descricao": st.column_config.TextColumn("Descrição", width="medium"),
+                "valor": st.column_config.NumberColumn("Valor (R$)", format="%.2f", min_value=0.0),
+                "categoria": st.column_config.SelectboxColumn("Cat.", options=["Alimentação", "Transporte", "Casa", "Lazer", "Saúde", "Educação", "Investimento", "Outros"]),
+                "tipo": st.column_config.SelectboxColumn("Tipo", options=["Despesa", "Receita"])
             },
-            hide_index=True, use_container_width=True, num_rows="dynamic", key="editor_extrato"
+            hide_index=True,
+            use_container_width=True, # Isso ajuda a preencher sem quebrar
+            num_rows="dynamic",
+            key="editor_extrato"
         )
         
         if st.button("💾 Salvar Alterações", type="primary"):
+            # Lógica de Diff para salvar
             ids_orig = df_edit['id'].tolist()
             ids_new = []
             
             for i, row in mudancas.iterrows():
                 d = row.to_dict()
-                if isinstance(d.get('data'), (date, datetime)): d['data'] = d['data'].strftime('%Y-%m-%d')
+                # Conversão de data segura
+                if isinstance(d['data'], (date, datetime)): d['data'] = d['data'].strftime('%Y-%m-%d')
+                else: d['data'] = str(d['data'])
                 
-                if pd.isna(d.get('id')): 
-                    if 'data' not in d or pd.isna(d['data']): d['data'] = str(date.today())
-                    if 'tipo' not in d: d['tipo'] = 'Despesa'
+                if pd.isna(d.get('id')): # Novo
+                    if not d.get('tipo'): d['tipo'] = 'Despesa'
                     executar_sql('transactions', 'insert', d, user['id'])
-                else: 
+                else: # Update
                     ids_new.append(d['id'])
                     executar_sql('transactions', 'update', d, user['id'])
             
-            for x in set(ids_orig) - set(ids_new):
-                executar_sql('transactions', 'delete', {'id': x}, user['id'])
+            # Delete removidos
+            if ids_new:
+                removidos = set(ids_orig) - set(ids_new)
+                for rid in removidos: executar_sql('transactions', 'delete', {'id': rid}, user['id'])
+            
+            st.toast("Dados atualizados!")
+            time.sleep(1)
             st.rerun()
-
-    else: st.info("Sem dados.")
+            
+    else:
+        st.info("Nenhuma transação encontrada.")
 
 # =======================================================
-# 3. ANÁLISE
+# 3. DASHBOARD (ANÁLISE 2.0)
 # =======================================================
-elif selected_nav == "📈 Análise":
-    st.subheader("Para onde foi o dinheiro?")
+elif selected_nav == "📊 Dashboard":
+    st.markdown("### Visão Geral")
     
-    if not df_total.empty:
+    if df_total.empty:
+        st.warning("Adicione transações para ver o dashboard.")
+    else:
         df_total['data_dt'] = pd.to_datetime(df_total['data'])
         df_chart = df_total[df_total['data_dt'].dt.month == date.today().month]
-        df_chart = df_chart[df_chart['tipo'] == 'Despesa']
         
-        if not df_chart.empty:
-            fig = px.pie(df_chart, values='valor', names='categoria', hole=0.6, color_discrete_sequence=px.colors.qualitative.Pastel)
-            fig.update_layout(showlegend=False, margin=dict(t=0,b=0,l=0,r=0), height=300, paper_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig, use_container_width=True)
-            
-            top_cats = df_chart.groupby('categoria')['valor'].sum().sort_values(ascending=False)
-            for cat, val in top_cats.items():
+        # 1. KPIs no Topo (Estilo Fintech)
+        col1, col2, col3 = st.columns(3)
+        receita_mes = df_chart[df_chart['tipo'] == 'Receita']['valor'].sum()
+        despesa_mes = df_chart[df_chart['tipo'] == 'Despesa']['valor'].sum()
+        saldo_mes = receita_mes - despesa_mes
+        
+        col1.markdown(f"<div class='kpi-card'><div class='kpi-title'>Receitas</div><div class='kpi-value' style='color:#00CC96'>R$ {fmt_real(receita_mes)}</div></div>", unsafe_allow_html=True)
+        col2.markdown(f"<div class='kpi-card'><div class='kpi-title'>Despesas</div><div class='kpi-value' style='color:#FF5252'>R$ {fmt_real(despesa_mes)}</div></div>", unsafe_allow_html=True)
+        col3.markdown(f"<div class='kpi-card'><div class='kpi-title'>Saldo</div><div class='kpi-value'>R$ {fmt_real(saldo_mes)}</div></div>", unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # 2. Gráfico de Evolução (Bar Chart) - Mostra QUANDO gastou
+        st.markdown("##### 📅 Evolução Diária")
+        df_diario = df_chart[df_chart['tipo'] == 'Despesa'].groupby('data')['valor'].sum().reset_index()
+        if not df_diario.empty:
+            fig_bar = px.bar(df_diario, x='data', y='valor', text_auto='.2s', color_discrete_sequence=['#FF5252'])
+            fig_bar.update_layout(
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="white"), margin=dict(l=0, r=0, t=10, b=20),
+                xaxis_title=None, yaxis_title=None, showlegend=False,
+                height=250
+            )
+            fig_bar.update_traces(textfont_size=12, textangle=0, textposition="outside", cliponaxis=False)
+            st.plotly_chart(fig_bar, use_container_width=True)
+        else: st.info("Sem despesas este mês.")
+
+        # 3. Categorias (Donut Chart Melhorado)
+        c_chart1, c_chart2 = st.columns([1, 1])
+        with c_chart1:
+            st.markdown("##### 🍕 Categorias")
+            df_cat = df_chart[df_chart['tipo'] == 'Despesa'].groupby('categoria')['valor'].sum().reset_index()
+            if not df_cat.empty:
+                fig_pie = px.pie(df_cat, values='valor', names='categoria', hole=0.6, color_discrete_sequence=px.colors.qualitative.Pastel)
+                fig_pie.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)', 
+                    font=dict(color="white"),
+                    showlegend=False, margin=dict(t=0, b=0, l=0, r=0), height=250,
+                    annotations=[dict(text=f"R$ {fmt_real(despesa_mes)}", x=0.5, y=0.5, font_size=15, showarrow=False)]
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else: st.caption("Sem dados.")
+
+        # 4. Lista Top Gastos
+        with c_chart2:
+            st.markdown("##### 🏆 Top Gastos")
+            top_gastos = df_chart[df_chart['tipo'] == 'Despesa'].sort_values('valor', ascending=False).head(4)
+            for _, row in top_gastos.iterrows():
                 st.markdown(f"""
-                <div style="background:#262730; padding:10px; border-radius:8px; margin-bottom:5px; display:flex; justify-content:space-between">
-                    <span>{cat}</span>
-                    <b>R$ {fmt_real(val)}</b>
+                <div style="border-bottom: 1px solid #333; padding: 8px 0; display:flex; justify-content:space-between; font-size:0.9rem;">
+                    <span>{row['descricao']}</span>
+                    <span style="font-weight:bold;">R$ {fmt_real(row['valor'])}</span>
                 </div>
                 """, unsafe_allow_html=True)
-        else: st.info("Nada gasto este mês.")
+
+        # 5. Botão de Insight IA
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("✨ Analisar Gastos com IA"):
+            with st.spinner("Analisando seus padrões..."):
+                insight = analisar_gastos_ia(df_chart[['data', 'descricao', 'valor', 'categoria', 'tipo']])
+                st.success(insight)
 
 # =======================================================
-# 4. AJUSTES (NOVA LÓGICA DE RECORRÊNCIA)
+# 4. METAS & OBJETIVOS (Antigo Ajustes)
 # =======================================================
-elif selected_nav == "⚙️ Ajustes":
-    st.subheader("Configurações")
+elif selected_nav == "🎯 Metas":
+    st.markdown("### Meus Objetivos")
     
-    # 1. Metas
-    with st.expander("🎯 Metas & Sonhos", expanded=True):
+    tab1, tab2 = st.tabs(["Metas de Curto/Longo Prazo", "Despesas Fixas"])
+    
+    with tab1:
+        # Resolvendo o problema do Input: Criando um Form separado
+        with st.expander("➕ Nova Meta (Adicionar)", expanded=False):
+            with st.form("form_meta"):
+                c1, c2 = st.columns(2)
+                m_desc = c1.text_input("Nome da Meta", placeholder="Ex: Viagem Japão")
+                m_data = c2.date_input("Prazo", value=date.today() + timedelta(days=365))
+                
+                c3, c4 = st.columns(2)
+                # Input numérico nativo é melhor que tentar parsear texto manualmente no grid
+                m_alvo = c3.number_input("Valor Alvo (R$)", min_value=0.0, step=100.0, format="%.2f")
+                m_atual = c4.number_input("Já Guardado (R$)", min_value=0.0, step=100.0, format="%.2f")
+                
+                if st.form_submit_button("Criar Meta"):
+                    if m_desc and m_alvo > 0:
+                        executar_sql('goals', 'insert', {
+                            'descricao': m_desc, 'valor_alvo': m_alvo, 
+                            'valor_atual': m_atual, 'data_limite': str(m_data)
+                        }, user['id'])
+                        st.success("Meta criada!")
+                        time.sleep(1); st.rerun()
+                    else: st.warning("Preencha nome e valor alvo.")
+
         df_metas = carregar_dados_generico("goals", user['id'])
         
-        edit_metas = st.data_editor(
-            df_metas,
-            num_rows="dynamic",
-            column_config={
-                "id": None, "user_id": None, "created_at": None,
-                "descricao": "Meta",
-                "valor_alvo": st.column_config.NumberColumn("Alvo", format="R$ %.2f"),
-                "valor_atual": st.column_config.NumberColumn("Guardado", format="R$ %.2f"),
-                "data_limite": st.column_config.DateColumn("Prazo") 
-            },
-            key="editor_metas_adj",
-            use_container_width=True
-        )
-        if st.button("Salvar Metas"):
-            ids_orig = df_metas['id'].tolist() if not df_metas.empty else []
-            ids_new = []
+        # Visualização em Cards (Gamification)
+        if not df_metas.empty:
+            for _, row in df_metas.iterrows():
+                progresso = 0
+                if row['valor_alvo'] > 0:
+                    progresso = min(1.0, row['valor_atual'] / row['valor_alvo'])
+                
+                st.markdown(f"""
+                <div style="background:#262730; padding:15px; border-radius:12px; border:1px solid #444; margin-bottom:10px;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+                        <b style="font-size:1.1rem">{row['descricao']}</b>
+                        <span style="color:#888">{int(progresso*100)}%</span>
+                    </div>
+                    <div style="width:100%; background:#444; height:8px; border-radius:4px; margin-bottom:10px;">
+                        <div style="width:{progresso*100}%; background: linear-gradient(90deg, #00CC96, #00b887); height:8px; border-radius:4px;"></div>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; font-size:0.9rem; color:#ccc;">
+                        <span>Atual: R$ {fmt_real(row['valor_atual'])}</span>
+                        <span>Alvo: R$ {fmt_real(row['valor_alvo'])}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             
-            for i, row in edit_metas.iterrows():
-                d = row.to_dict()
-                if pd.isna(d.get('id')): 
-                    executar_sql('goals', 'insert', d, user['id'])
-                else: 
-                    ids_new.append(d['id'])
-                    executar_sql('goals', 'update', d, user['id'])
-            
-            if not edit_metas.empty and 'id' in edit_metas.columns:
-                 ids_new = edit_metas['id'].dropna().tolist()
-                 
-            for x in set(ids_orig) - set(ids_new):
-                executar_sql('goals', 'delete', {'id': x}, user['id'])
-            
-            st.success("Atualizado!")
-            time.sleep(1); st.rerun()
+            # Editor simples apenas para atualizar valores (menos propenso a erro de input que criar do zero)
+            with st.expander("📝 Editar Valores das Metas"):
+                st.info("Para alterar, edite abaixo.")
+                edit_metas = st.data_editor(
+                    df_metas[['id', 'descricao', 'valor_atual', 'valor_alvo']],
+                    column_config={
+                        "id": None,
+                        "descricao": "Meta",
+                        "valor_atual": st.column_config.NumberColumn("Guardado", format="R$ %.2f"),
+                        "valor_alvo": st.column_config.NumberColumn("Alvo", format="R$ %.2f"),
+                    },
+                    hide_index=True, use_container_width=True, key="edit_metas_grid"
+                )
+                if st.button("Salvar Edições Metas"):
+                     for i, row in edit_metas.iterrows():
+                         executar_sql('goals', 'update', row.to_dict(), user['id'])
+                     st.rerun()
+        else:
+            st.info("Nenhuma meta definida.")
 
-    # 2. Recorrências (Lógica Nova)
-    with st.expander("🔄 Contas Fixas & Parcelamentos"):
-        st.info("💡 Marque 'Infinito' para assinaturas (Netflix, Luz). Desmarque para compras parceladas.")
-        
-        df_recorrente = carregar_dados_generico("recurrent_expenses", user['id'])
+    with tab2:
+        st.caption("Contas que se repetem todo mês (Ex: Aluguel, Netflix, Parcelas).")
+        df_rec = carregar_dados_generico("recurrent_expenses", user['id'])
         
         edit_rec = st.data_editor(
-            df_recorrente,
+            df_rec,
             num_rows="dynamic",
             column_config={
-                "id": None, "user_id": None, "created_at": None,
-                "descricao": st.column_config.TextColumn("Nome (ex: iPhone, Netflix)"),
-                "eh_infinito": st.column_config.CheckboxColumn("Infinito?", default=False),
-                "valor_parcela": st.column_config.NumberColumn("Valor Parcela", format="R$ %.2f"),
+                "id": None, "user_id": None, "created_at": None, "valor_total": None, "parcelas_restantes": None,
+                "descricao": st.column_config.TextColumn("Nome"),
+                "valor_parcela": st.column_config.NumberColumn("Valor", format="R$ %.2f", required=True),
                 "dia_vencimento": st.column_config.NumberColumn("Dia Venc.", min_value=1, max_value=31),
-                
-                # Campos apenas para parcelados
-                "parcelas_restantes": st.column_config.NumberColumn("Faltam (Meses)", min_value=0, step=1),
-                "valor_total": st.column_config.NumberColumn("Total Compra (Opcional)", format="R$ %.2f"),
+                "eh_infinito": st.column_config.CheckboxColumn("Assinatura (Infinito)?", default=True)
             },
-            key="editor_rec_adj",
-            use_container_width=True
+            hide_index=True, use_container_width=True, key="rec_editor"
         )
         
         if st.button("Salvar Fixos"):
-            ids_orig = df_recorrente['id'].tolist() if not df_recorrente.empty else []
-            ids_new = []
-            
-            for i, row in edit_rec.iterrows():
-                d = row.to_dict()
-                
-                # Lógica de limpeza simples
-                if d.get('eh_infinito'):
-                    d['parcelas_restantes'] = 0 # Zera parcelas se for infinito
-                
-                if pd.isna(d.get('id')): executar_sql('recurrent_expenses', 'insert', d, user['id'])
-                else: 
-                    ids_new.append(d['id'])
-                    executar_sql('recurrent_expenses', 'update', d, user['id'])
-            
-            if not edit_rec.empty and 'id' in edit_rec.columns:
-                ids_new = edit_rec['id'].dropna().tolist()
+             ids_orig = df_rec['id'].tolist() if not df_rec.empty else []
+             ids_new = []
+             for i, row in edit_rec.iterrows():
+                 d = row.to_dict()
+                 if pd.isna(d.get('id')): executar_sql('recurrent_expenses', 'insert', d, user['id'])
+                 else: 
+                     ids_new.append(d['id'])
+                     executar_sql('recurrent_expenses', 'update', d, user['id'])
+             
+             for x in set(ids_orig) - set(ids_new):
+                 executar_sql('recurrent_expenses', 'delete', {'id': x}, user['id'])
+             st.success("Salvo!")
+             time.sleep(1); st.rerun()
 
-            for x in set(ids_orig) - set(ids_new):
-                executar_sql('recurrent_expenses', 'delete', {'id': x}, user['id'])
-            st.success("Atualizado!")
-            time.sleep(1); st.rerun()
-
-    st.markdown("---")
-    if st.button("Sair da Conta", type="secondary"):
-        st.session_state.clear()
-        st.rerun()
+# Botão Sair no canto inferior
+st.markdown("<br><hr>", unsafe_allow_html=True)
+if st.button("Sair da Conta", type="secondary"):
+    st.session_state.clear()
+    st.rerun()
